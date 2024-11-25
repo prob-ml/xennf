@@ -53,7 +53,6 @@ def prepare_synthetic_data(
     ax.imshow(clustered_grid, cmap="tab20", interpolation="nearest", origin='lower')  # Flip y axis by setting origin to 'lower'
     ax.set_title("Ground Truth Clusters")
     plt.colorbar(ax.imshow(clustered_grid, cmap="rainbow", interpolation="nearest", origin='lower'), ax=ax, label="Cluster Level", ticks=range(num_clusters + 1))  # Flip y axis by setting origin to 'lower'
-    import os
     os.makedirs("results/SYNTHETIC", exist_ok=True)
     plt.savefig("results/SYNTHETIC/ground_truth.png")
     

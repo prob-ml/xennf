@@ -20,6 +20,9 @@ import math
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import warnings
+import os
+import json
+from utils import ARI, NMI
 
 # Custom module imports
 from xenium_cluster import XeniumCluster
@@ -146,13 +149,14 @@ def prepare_data(config):
         plt.colorbar(ticks=range(1, config.data.num_clusters + 1), label='Cluster Values')
         plt.title('Prior Cluster Assignment with XenNF')
 
-    return spatial_cluster_probs_prior, spatial_locations, original_adata, data, empirical_prior_means, empirical_prior_scales
+    return data, spatial_locations, original_adata, data, spatial_cluster_probs_prior, empirical_prior_means, empirical_prior_scales, TRUE_PRIOR_WEIGHTS
 
 def train(
         model, 
         guide, 
         data,
-        config
+        config,
+        true_prior_weights=None
     ):
 
     NUM_EPOCHS = config.flows.num_epochs
@@ -182,7 +186,10 @@ def train(
             loss = svi.step(data)
             running_loss += loss / config.flows.batch_size
         epoch_pbar.set_description(f"Epoch {epoch} : loss = {round(running_loss, 4)}")
-        # print(f"Epoch {epoch} : loss = {round(running_loss, 4)}")
+        # if (epoch % 10 == 0 or epoch == 1) and config.data.dataset == "SYNTHETIC":
+        #     ari = ARI(cluster_assignments_posterior, true_prior_weights.argmax(dim=-1))
+        #     nmi = NMI(cluster_assignments_posterior, true_prior_weights.argmax(dim=-1))
+        #     print(f"ARI = {round(ari, 2)} NMI = {round(nmi, 2)}")
         if running_loss > current_min_loss:
             patience_counter += 1
         else:
@@ -191,14 +198,20 @@ def train(
         if patience_counter >= config.flows.patience:
             break 
 
-def save_filepath(config, entity):
+def save_filepath(config):
     total_file_path = (
         f"results/{config.data.dataset}/XenNF/DATA_DIM={config.data.data_dimension}/"
         f"K={config.data.num_clusters}/INIT={config.data.init_method}/NEIGHBORSIZE={config.data.neighborhood_size}/"
         f"FLOW_TYPE={config.flows.flow_type}/FLOW_LENGTH={config.flows.flow_length}/HIDDEN_LAYERS={config.flows.hidden_layers}"
     )
+    return total_file_path
 
-def posterior_eval(data, spatial_locations, original_adata, config):
+def posterior_eval(
+        data, 
+        spatial_locations,  
+        config, 
+        true_prior_weights=None
+    ):
 
     cluster_probs_samples = []
     for _ in range(config.VI.num_posterior_samples):
@@ -225,6 +238,23 @@ def posterior_eval(data, spatial_locations, original_adata, config):
     plt.colorbar(ticks=range(1, config.data.num_clusters + 1), label='Cluster Values')
     plt.title('Posterior Cluster Assignment with XenNF')
 
+    if not os.path.exists(xennf_clusters_filepath := save_filepath(config)):
+        os.makedirs(xennf_clusters_filepath)
+    _ = plt.savefig(
+        f"{xennf_clusters_filepath}/result.png"
+    )
+
+    if config.data.dataset == "SYNTHETIC":
+        ari = ARI(cluster_assignments_posterior, true_prior_weights.argmax(axis=-1))
+        nmi = NMI(cluster_assignments_posterior, true_prior_weights.argmax(axis=-1))
+        cluster_metrics = {
+            "ARI": ari,
+            "NMI": nmi
+        }
+        with open(f"{xennf_clusters_filepath}/cluster_metrics.json", 'w') as fp:
+            json.dump(cluster_metrics, fp)
+
+
 if __name__ == "__main__":
 
     # setup 
@@ -234,7 +264,7 @@ if __name__ == "__main__":
     warnings.filterwarnings("ignore")
     config = OmegaConf.load('config/config1.yaml')
 
-    spatial_cluster_probs_prior, spatial_locations, original_adata, data, empirical_prior_means, empirical_prior_scales = prepare_data(config)
+    data, spatial_locations, original_adata, data, spatial_cluster_probs_prior, empirical_prior_means, empirical_prior_scales, true_prior_weights = prepare_data(config)
 
     # model, flow, and guide setup
     def model(data):
@@ -304,8 +334,8 @@ if __name__ == "__main__":
             cluster_probs = torch.softmax(cluster_logits, dim=-1)
 
     # execution
-    train(model, guide, data, config)
-    posterior_eval(data, spatial_locations, config)
+    train(model, guide, data, config, true_prior_weights)
+    posterior_eval(data, spatial_locations, config, true_prior_weights)
 
 
 
