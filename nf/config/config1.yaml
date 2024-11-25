@@ -1,0 +1,21 @@
+data:
+  dataset: "SYNTHETIC"
+  data_dimension: 5
+  num_clusters: 7
+  num_pcs: 3
+  init_method: "K-Means"
+  neighborhood_size: 1
+  neighborhood_agg: "mean"
+VI:
+  learn_global_variances: False
+  min_concentration: 0.01
+  num_prior_samples: 100
+  num_posterior_samples: 100
+  num_particles: 10
+flows:
+  flow_type: "CNF"
+  flow_length: 8
+  hidden_layers: [128, 128]
+  num_epochs: 2
+  batch_size: 256
+  patience: 5

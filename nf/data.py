@@ -98,9 +98,6 @@ def prepare_synthetic_data(
         
         means.append(mean)
         covariances.append(covariance)
-
-    for mean, covariance in zip(means, covariances):
-        print(mean, covariance)
         
     # Generate samples from the mixture.
     for i, weights in enumerate(prior_weights):
