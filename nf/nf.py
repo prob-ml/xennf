@@ -62,16 +62,13 @@ def prepare_data(config):
     prior_means = torch.zeros(config.data.num_clusters, gene_data.shape[1])
     prior_scales = torch.ones(config.data.num_clusters, gene_data.shape[1])
 
-    data = torch.tensor(gene_data).float()
-    num_obs, data_dim = data.shape
-
     # clamping
     MIN_CONCENTRATION = config.VI.min_concentration
 
-    spatial_init_data = StandardScaler().fit_transform(gene_data)
     gene_data = StandardScaler().fit_transform(gene_data)
-    empirical_prior_means = torch.zeros(config.data.num_clusters, spatial_init_data.shape[1])
-    empirical_prior_scales = torch.ones(config.data.num_clusters, spatial_init_data.shape[1])
+
+    data = torch.tensor(gene_data).float()
+    num_obs, data_dim = data.shape
 
     rows = spatial_locations["row"].astype(int)
     columns = spatial_locations["col"].astype(int)
@@ -81,11 +78,14 @@ def prepare_data(config):
 
     initial_clusters = custom_cluster_initialization(original_adata, config.data.init_method, K=config.data.num_clusters, num_pcs=config.data.num_pcs)
 
-    for i in range(config.data.num_clusters):
-        cluster_data = gene_data[initial_clusters == i]
-        if cluster_data.size > 0:  # Check if there are any elements in the cluster_data
-            empirical_prior_means[i] = torch.tensor(cluster_data.mean(axis=0))
-            empirical_prior_scales[i] = torch.tensor(cluster_data.std(axis=0))
+    empirical_prior_means = torch.zeros(config.data.num_clusters, gene_data.shape[1])
+    empirical_prior_scales = torch.ones(config.data.num_clusters, gene_data.shape[1])
+    if config.VI.empirical_prior:
+        for i in range(config.data.num_clusters):
+            cluster_data = gene_data[initial_clusters == i]
+            if cluster_data.size > 0:  # Check if there are any elements in the cluster_data
+                empirical_prior_means[i] = torch.tensor(cluster_data.mean(axis=0))
+                empirical_prior_scales[i] = torch.tensor(cluster_data.std(axis=0))
     cluster_probs_prior = torch.zeros((initial_clusters.shape[0], config.data.num_clusters))
     cluster_probs_prior[torch.arange(initial_clusters.shape[0]), initial_clusters - 1] = 1.
 
@@ -149,7 +149,7 @@ def prepare_data(config):
         plt.colorbar(ticks=range(1, config.data.num_clusters + 1), label='Cluster Values')
         plt.title('Prior Cluster Assignment with XenNF')
 
-    return data, spatial_locations, original_adata, data, spatial_cluster_probs_prior, empirical_prior_means, empirical_prior_scales, TRUE_PRIOR_WEIGHTS
+    return data, spatial_locations, original_adata, spatial_cluster_probs_prior, empirical_prior_means, empirical_prior_scales, TRUE_PRIOR_WEIGHTS
 
 def train(
         model, 
@@ -164,13 +164,13 @@ def train(
 
     def per_param_callable(param_name):
         if param_name == 'cluster_means_q_mean':
-            return {"lr": 0.001, "betas": (0.9, 0.999)}
+            return {"lr": config.flows.lr, "betas": (0.9, 0.999)}
         elif param_name == 'cluster_scales_q_mean':
-            return {"lr": 0.001, "betas": (0.9, 0.999)}
+            return {"lr": config.flows.lr, "betas": (0.9, 0.999)}
         elif "logit" in param_name:
-            return {"lr": 0.001, "betas": (0.9, 0.999)}
+            return {"lr": config.flows.lr, "betas": (0.9, 0.999)}
         else:
-            return {"lr": 0.001, "betas": (0.9, 0.999)}
+            return {"lr": config.flows.lr, "betas": (0.9, 0.999)}
 
     scheduler = Adam(per_param_callable)
 
@@ -214,10 +214,24 @@ def posterior_eval(
     ):
 
     cluster_probs_samples = []
-    for _ in range(config.VI.num_posterior_samples):
-        with pyro.plate("data", len(data)):
-            cluster_probs_sample = torch.softmax(pyro.sample("cluster_probs", ZukoToPyro(cluster_probs_flow_dist(data))), dim=-1)
-        cluster_probs_samples.append(cluster_probs_sample)
+    batch_size = config.flows.batch_size
+    num_batches = math.ceil(len(data) / batch_size)
+
+    with torch.no_grad():
+        for _ in range(config.VI.num_posterior_samples):
+            batch_probs_samples = []
+            for batch_idx in range(num_batches):
+                batch_data = data[batch_idx * batch_size: (batch_idx + 1) * batch_size]
+                with pyro.plate("data", len(batch_data)):
+                    cluster_probs_sample = torch.softmax(
+                        pyro.sample("cluster_probs", ZukoToPyro(cluster_probs_flow_dist(batch_data))),
+                        dim=-1
+                    )
+                batch_probs_samples.append(cluster_probs_sample)
+                del batch_data, cluster_probs_sample  # Explicitly delete
+                torch.cuda.empty_cache()
+            cluster_probs_samples.append(torch.cat(batch_probs_samples, dim=0))
+
     cluster_probs_avg = torch.stack(cluster_probs_samples).mean(dim=0)
     cluster_assignments_posterior = cluster_probs_avg.argmax(dim=-1)
 
@@ -245,8 +259,8 @@ def posterior_eval(
     )
 
     if config.data.dataset == "SYNTHETIC":
-        ari = ARI(cluster_assignments_posterior, true_prior_weights.argmax(axis=-1))
-        nmi = NMI(cluster_assignments_posterior, true_prior_weights.argmax(axis=-1))
+        ari = ARI(cluster_assignments_posterior.cpu(), true_prior_weights.argmax(axis=-1))
+        nmi = NMI(cluster_assignments_posterior.cpu(), true_prior_weights.argmax(axis=-1))
         cluster_metrics = {
             "ARI": ari,
             "NMI": nmi
@@ -257,14 +271,34 @@ def posterior_eval(
 
 if __name__ == "__main__":
 
+    # cuda setup
+    if torch.cuda.is_available():
+        print("YAY! GPU available :3")
+        
+        # Get all available GPUs sorted by memory usage (lowest first)
+        available_gpus = GPUtil.getAvailable(order='memory', limit=1)
+        
+        if available_gpus:
+            selected_gpu = available_gpus[0]
+            
+            # Set the GPU with the lowest memory usage
+            torch.cuda.set_device(selected_gpu)
+            torch.set_default_tensor_type(torch.cuda.FloatTensor)
+            
+            print(f"Using GPU: {selected_gpu} with the lowest memory usage.")
+        else:
+            print("No GPUs available with low memory usage.")
+    else:
+        print("No GPU available :(")
+
     # setup 
     torch.set_printoptions(sci_mode=False)
     pyro.clear_param_store()
     expected_total_param_dim = 2 # K x D
     warnings.filterwarnings("ignore")
-    config = OmegaConf.load('config/config1.yaml')
+    config = OmegaConf.load('config/config3.yaml')
 
-    data, spatial_locations, original_adata, data, spatial_cluster_probs_prior, empirical_prior_means, empirical_prior_scales, true_prior_weights = prepare_data(config)
+    data, spatial_locations, original_adata, spatial_cluster_probs_prior, empirical_prior_means, empirical_prior_scales, true_prior_weights = prepare_data(config)
 
     # model, flow, and guide setup
     def model(data):
@@ -279,7 +313,7 @@ if __name__ == "__main__":
         with pyro.plate("data", len(data), subsample_size=config.flows.batch_size) as ind:
             batch_data = data[ind]
             mu = torch.log(spatial_cluster_probs_prior[ind])
-            cov_matrix = torch.eye(mu.shape[1], dtype=mu.dtype, device=mu.device) * 10.0
+            cov_matrix = torch.eye(mu.shape[1], dtype=mu.dtype, device=mu.device) * (10 ** 0.5)
             cluster_probs_logits = pyro.sample("cluster_logits", dist.MultivariateNormal(mu, cov_matrix))
             cluster_probs = torch.softmax(cluster_probs_logits, dim=-1)
 

@@ -7,15 +7,18 @@ data:
   neighborhood_size: 1
   neighborhood_agg: "mean"
 VI:
+  empirical_prior: True
   learn_global_variances: False
-  min_concentration: 0.01
+  min_concentration: 0.001
   num_prior_samples: 100
   num_posterior_samples: 100
   num_particles: 10
 flows:
   flow_type: "MAF"
   flow_length: 32
-  hidden_layers: [128, 128]
+  hidden_layers: [128, 128, 128, 128]
   num_epochs: 1000
   batch_size: 256
   patience: 5
+  lr: 0.0001
+

@@ -112,6 +112,8 @@ def prepare_synthetic_data(
     adata.obs['col'] = np.tile(np.arange(clustered_grid.shape[1]), clustered_grid.shape[0])
     clustering = XeniumCluster(data=adata.X, dataset_name="SYNTHETIC")
     clustering.xenium_spot_data = adata
+    clustering.num_clusters = num_clusters
+    clustering.data_dimension = data_dimension
 
     # Xenium_to_BayesSpace(clustering.xenium_spot_data, dataset_name="SYNTHETIC", spot_size=grid_size)
 

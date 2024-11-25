@@ -31,6 +31,14 @@ class XeniumCluster:
         self.SPOT_SIZE = spot_size
         self.spot_data_location = f"data/spot_data/{dataset_name}"
 
+    def target_dir_setter(self, method, **kwargs):
+        if self.dataset_name == "SYNTHETIC":
+            self.target_dir = f"results/{self.dataset_name}/{method}/DATA_DIM={self.data_dimension}" + "/".join([f"{key}={value}" for key, value in kwargs.items()]) + f"/clusters"
+        elif self.dataset_name == "hBreast":
+            self.target_dir = f"results/{self.dataset_name}/{method}/" + "/".join([f"{key}={value}" for key, value in kwargs.items()]) + f"/clusters/{self.SPOT_SIZE}"
+        else:
+            raise NotImplementedError("Dataset not supported.")
+
     def set_spot_size(self, new_spot_size):
 
         if not isinstance(new_spot_size, (int, float)): 
@@ -142,8 +150,8 @@ class XeniumCluster:
             # # plot embedding
             # _ = plot_embedding(data, key_added, embedding, **kwargs)
 
-            target_dir = f"results/{self.dataset_name}/Leiden/{resolution}/clusters/{self.SPOT_SIZE}"
-            os.makedirs(target_dir, exist_ok=True)
+            self.target_dir_setter("Leiden", resolution=resolution)
+            os.makedirs(self.target_dir, exist_ok=True)
             
             # Extracting row, col, and cluster values from the dataframe
             rows = torch.tensor(data.obs["row"].astype(int))
@@ -171,7 +179,7 @@ class XeniumCluster:
             plt.title(f'Cluster Assignment with Leiden ($\gamma$ = {resolution})')
 
             plt.savefig(
-                f"{target_dir}/clusters_RES={resolution}.png"
+                f"{self.target_dir}/clusters_RES={resolution}.png"
             )
 
         return {resolution: data.obs[f'leiden_{resolution}'].values.astype(int) for resolution in resolutions}
@@ -197,8 +205,8 @@ class XeniumCluster:
             # _ = plot_embedding(data, key_added, embedding, **kwargs)
 
 
-            target_dir = f"results/{self.dataset_name}/Louvain/{resolution}/clusters/{self.SPOT_SIZE}"
-            os.makedirs(target_dir, exist_ok=True)
+            self.target_dir_setter("Louvain", resolution=resolution)
+            os.makedirs(self.target_dir, exist_ok=True)
             
             # Extracting row, col, and cluster values from the dataframe
             rows = torch.tensor(data.obs["row"].astype(int))
@@ -226,7 +234,7 @@ class XeniumCluster:
             plt.title(f'Cluster Assignment with Louvain ($\gamma$ = {resolution})')
 
             plt.savefig(
-                f"{target_dir}/clusters_RES={resolution}.png"
+                f"{self.target_dir}/clusters_RES={resolution}.png"
             )
 
         return {resolution: data.obs[f'louvain_{resolution}'].values.astype(int) for resolution in resolutions}
@@ -279,8 +287,8 @@ class XeniumCluster:
         # # plot embedding
         # _ = plot_embedding(data, key_added, embedding, **kwargs)
 
-        target_dir = f"results/{self.dataset_name}/Hierarchical/{num_clusters}/clusters/{self.SPOT_SIZE}"
-        os.makedirs(target_dir, exist_ok=True)
+        self.target_dir_setter("Hierarchical", K=num_clusters)
+        os.makedirs(self.target_dir, exist_ok=True)
             
         # Extracting row, col, and cluster values from the dataframe
         rows = torch.tensor(data.obs["row"].astype(int))
@@ -308,7 +316,7 @@ class XeniumCluster:
         plt.title(f'Cluster Assignment with Hierarchical')
 
         plt.savefig(
-            f"{target_dir}/clusters_K={num_clusters}.png"
+            f"{self.target_dir}/clusters_K={num_clusters}.png"
         )
 
         return data.obs[key_added].values.astype(int)
@@ -340,8 +348,8 @@ class XeniumCluster:
 
             data.obs["cluster"] = cluster_assignments
 
-            target_dir = f"results/{self.dataset_name}/K-Means/{K}/clusters/{self.SPOT_SIZE}"
-            os.makedirs(target_dir, exist_ok=True)
+            self.target_dir_setter("K-Means", K=num_clusters)
+            os.makedirs(self.target_dir, exist_ok=True)
                 
             # Extracting row, col, and cluster values from the dataframe
             rows = torch.tensor(data.obs["row"].astype(int))
@@ -369,7 +377,7 @@ class XeniumCluster:
             plt.title(f'Cluster Assignment with K-Means')
 
             plt.savefig(
-                f"{target_dir}/clusters_K={K}.png"
+                f"{self.target_dir}/clusters_K={K}.png"
             )
 
             return cluster_assignments
@@ -395,14 +403,13 @@ class XeniumCluster:
             subprocess.run(command, check=True, capture_output=True)
 
         run_r_script("xenium_BayesSpace.R", self.dataset_name, f"{self.SPOT_SIZE}", f"{init_method}", f"{num_pcs}", f"{K}", f"{grid_search}")
-
-        target_dir = f"results/{self.dataset_name}/BayesSpace/{num_pcs}/{K}/clusters/{init_method}/{self.SPOT_SIZE}"
-        os.makedirs(target_dir, exist_ok=True)
+        self.target_dir_setter("BayesSpace", num_pcs=3, K=num_clusters, INIT=init_method)
+        os.makedirs(self.target_dir, exist_ok=True)
         gammas = np.linspace(1, 3, 9) if grid_search else [2]
         for gamma in gammas:
-            new_target_dir = os.path.join(target_dir, f"{gamma:.2f}")
-            os.makedirs(new_target_dir, exist_ok=True)
-            BayesSpace_clusters = pd.read_csv(f"{target_dir}/{gamma:.2f}/clusters_K={K}.csv", index_col=0)
+            self.target_dir = os.path.join(self.target_dir, f"{gamma:.2f}")
+            os.makedirs(self.target_dir, exist_ok=True)
+            BayesSpace_clusters = pd.read_csv(f"{self.target_dir}/{gamma:.2f}/clusters_K={K}.csv", index_col=0)
             data.obs["cluster"] = np.array(BayesSpace_clusters["BayesSpace cluster"])
             # Extracting row, col, and cluster values from the dataframe
             rows = torch.tensor(data.obs["row"].astype(int))
@@ -430,7 +437,7 @@ class XeniumCluster:
             plt.title(f'Cluster Assignment with BayesSpace ($\gamma$ = {gamma})')
 
             plt.savefig(
-                os.path.join(new_target_dir, f"clusters_K={K}.png")
+                os.path.join(self.target_dir, f"clusters_K={K}.png")
             )
 
         return data.obs["cluster"].values.astype(int)
@@ -463,9 +470,10 @@ class XeniumCluster:
 
         np.savetxt(temp_dir, data.obsm["X_pca"], delimiter=",")
         num_output_clusters = run_r_script("mclust.R", temp_dir, f"{G}", f"{data.obsm['X_pca'].shape[1]}", f"{self.SPOT_SIZE}", self.dataset_name)
-        target_dir = f"results/{self.dataset_name}/mclust/{data.obsm['X_pca'].shape[1]}/{G}/clusters/{self.SPOT_SIZE}"
+        self.target_dir_setter("mclust", num_pcs=data.obsm['X_pca'].shape[1], K=G)
+        
 
-        mclust_clusters = pd.read_csv(f"{target_dir}/clusters_K={G}.csv", index_col=0)
+        mclust_clusters = pd.read_csv(f"{self.target_dir}/clusters_K={G}.csv", index_col=0)
         data.obs["cluster"] = np.array(mclust_clusters["mclust cluster"])
     
         # Extracting row, col, and cluster values from the dataframe
@@ -495,7 +503,7 @@ class XeniumCluster:
         plt.title(f'Cluster Assignment with mclust')
 
         plt.savefig(
-            f"{target_dir}/clusters_K={G}.png"
+            f"{self.target_dir}/clusters_K={G}.png"
         )
 
         return data.obs["cluster"].values
