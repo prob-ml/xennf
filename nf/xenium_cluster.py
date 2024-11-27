@@ -33,9 +33,18 @@ class XeniumCluster:
 
     def target_dir_setter(self, method, **kwargs):
         if self.dataset_name == "SYNTHETIC":
-            self.target_dir = f"results/{self.dataset_name}/{method}/DATA_DIM={self.data_dimension}" + "/".join([f"{key}={value}" for key, value in kwargs.items()]) + f"/clusters"
+            self.target_dir = os.path.join(
+                f"results/{self.dataset_name}/{method}/",
+                f"DATA_DIM={self.data_dimension}",
+                "/".join([f"{key}={value}" for key, value in kwargs.items()]),
+                "clusters"
+            )
         elif self.dataset_name == "hBreast":
-            self.target_dir = f"results/{self.dataset_name}/{method}/" + "/".join([f"{key}={value}" for key, value in kwargs.items()]) + f"/clusters/{self.SPOT_SIZE}"
+            self.target_dir = os.path.join(
+                f"results/{self.dataset_name}/{method}/",
+                "/".join([f"{key}={value}" for key, value in kwargs.items()]),
+                "clusters"
+            )
         else:
             raise NotImplementedError("Dataset not supported.")
 
@@ -348,7 +357,7 @@ class XeniumCluster:
 
             data.obs["cluster"] = cluster_assignments
 
-            self.target_dir_setter("K-Means", K=num_clusters)
+            self.target_dir_setter("K-Means", K=K)
             os.makedirs(self.target_dir, exist_ok=True)
                 
             # Extracting row, col, and cluster values from the dataframe
@@ -403,7 +412,7 @@ class XeniumCluster:
             subprocess.run(command, check=True, capture_output=True)
 
         run_r_script("xenium_BayesSpace.R", self.dataset_name, f"{self.SPOT_SIZE}", f"{init_method}", f"{num_pcs}", f"{K}", f"{grid_search}")
-        self.target_dir_setter("BayesSpace", num_pcs=3, K=num_clusters, INIT=init_method)
+        self.target_dir_setter("BayesSpace", num_pcs=3, K=K, INIT=init_method)
         os.makedirs(self.target_dir, exist_ok=True)
         gammas = np.linspace(1, 3, 9) if grid_search else [2]
         for gamma in gammas:
