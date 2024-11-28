@@ -9,16 +9,16 @@ data:
 VI:
   empirical_prior: True
   learn_global_variances: False
-  min_concentration: 0.001
+  min_concentration: 0.01
   num_prior_samples: 100
   num_posterior_samples: 100
-  num_particles: 10
+  num_particles: 5
 flows:
   flow_type: "MAF"
   flow_length: 32
-  hidden_layers: [128, 128, 128, 128]
+  hidden_layers: [128, 128, 128]
   num_epochs: 1000
   batch_size: 256
   patience: 5
-  lr: 0.0001
+  lr: 0.00001
 

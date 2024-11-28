@@ -103,16 +103,27 @@ class Potts2D(dist.Distribution):
 
     def log_prob(self, cluster_probs):
 
-        cluster_state_flattened = self.current_state.reshape(-1,1)[self.batch_idx]
+        if cluster_probs.dim() == 2:
 
-        # -1 is for indexing purposes. The 0 cluster is for empty cells.
-        # print(cluster_probs.shape)
-        # print(range(cluster_state_flattened.size(0)))
-        # print(cluster_state_flattened.flatten() - 1)
-        cluster_prob_tensor = cluster_probs[range(cluster_state_flattened.size(0)), cluster_state_flattened.flatten() - 1]
+            cluster_state_flattened = self.current_state.reshape(-1,1)[self.batch_idx]
 
-        log_prob_tensor = torch.log(cluster_prob_tensor)
-        
+            # -1 is for indexing purposes. The 0 cluster is for empty cells.
+            # print(cluster_probs.shape)
+            # print(range(cluster_state_flattened.size(0)))
+            # print(cluster_state_flattened.flatten() - 1)
+            cluster_prob_tensor = cluster_probs[range(cluster_state_flattened.size(0)), cluster_state_flattened.flatten() - 1]
+
+            log_prob_tensor = torch.log(cluster_prob_tensor)
+
+        else:
+
+            cluster_state_flattened = self.current_state.reshape(-1,1)[self.batch_idx]
+
+            # -1 is for indexing purposes. The 0 cluster is for empty cells.
+            cluster_prob_tensor = cluster_probs[:, range(cluster_state_flattened.size(0)), cluster_state_flattened.flatten() - 1]
+
+            log_prob_tensor = torch.log(cluster_prob_tensor)
+
         return log_prob_tensor  # Return the sum of all values in log_prob_tensor
 
 def custom_cluster_initialization(original_adata, method, K=17, num_pcs=3):
@@ -438,7 +449,7 @@ if __name__ == "__main__":
         context_length=config.data.data_dimension,
         hidden_layers=config.flows.hidden_layers
     )
-
+ 
     def guide(data):
         
         pyro.module("posterior_flow", cluster_probs_flow_dist)
@@ -466,10 +477,14 @@ if __name__ == "__main__":
                 constraint=dist.constraints.positive
             )
 
+            # Make the logits numerically stable
+            max_logit = torch.max(cluster_logits, dim=-1, keepdim=True).values
+            stable_logits = cluster_logits - max_logit
+
             # Sample cluster_probs using RelaxedOneHotCategorical
             cluster_probs = pyro.sample(
                 "cluster_probs",
-                dist.RelaxedOneHotCategorical(temperature=temperature, logits=cluster_logits)
+                dist.RelaxedOneHotCategorical(temperature=temperature, logits=stable_logits)
             )
 
     # execution
