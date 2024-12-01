@@ -16,9 +16,9 @@ VI:
 flows:
   flow_type: "MAF"
   flow_length: 32
-  hidden_layers: [128, 128, 128]
+  hidden_layers: [256, 256]
   num_epochs: 1000
   batch_size: 256
   patience: 5
-  lr: 0.00001
+  lr: 0.0001
 

@@ -6,6 +6,8 @@ import pyro
 import pyro.distributions as dist
 from torch import Size, Tensor
 
+from zuko.lazy import UnconditionalTransform
+
 class ZukoToPyro(pyro.distributions.TorchDistribution):
     r"""Wraps a Zuko distribution as a Pyro distribution.
 
@@ -126,4 +128,8 @@ def setup_zuko_flow(flow_type: str, num_clusters: int, flow_length: int = 1, con
                 context=context_length,
                 bins=16
             )
+
+    # clamping
+    # Manually wrap the flow with the SoftclipTransform
+  
     return cluster_probs_flow_dist
