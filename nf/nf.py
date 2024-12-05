@@ -322,7 +322,7 @@ if __name__ == "__main__":
                 pyro.sample(f"obs", dist.MixtureOfDiagNormals(
                         cluster_means.unsqueeze(0).expand(config.flows.batch_size, -1, -1), 
                         cluster_scales.unsqueeze(0).expand(config.flows.batch_size, -1, -1), 
-                        cluster_probs
+                        torch.log(cluster_probs)
                     ), 
                     obs=batch_data
                 )
@@ -331,7 +331,7 @@ if __name__ == "__main__":
                 pyro.sample(f"obs", dist.MixtureOfDiagNormals(
                         cluster_means.unsqueeze(1).expand(-1, config.flows.batch_size, -1, -1), 
                         cluster_scales.unsqueeze(1).expand(-1, config.flows.batch_size, -1, -1), 
-                        cluster_probs
+                        torch.log(cluster_probs)
                     ), 
                     obs=batch_data
                 )

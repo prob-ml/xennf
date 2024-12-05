@@ -1,8 +1,8 @@
 data:
-  dataset: "SYNTHETIC"
-  data_dimension: 5
+  dataset: "DLPFC"
+  data_dimension: 25
   num_clusters: 7
-  num_pcs: 3
+  num_pcs: 25
   init_method: "K-Means"
   neighborhood_size: 1
   neighborhood_agg: "mean"
@@ -11,13 +11,13 @@ VI:
   learn_global_variances: False
   min_concentration: 0.001
   num_prior_samples: 100
-  num_posterior_samples: 100
-  num_particles: 10
+  num_posterior_samples: 2500
+  num_particles: 25
 flows:
   flow_type: "CNF"
   flow_length: 32
-  hidden_layers: [512, 512, 512]
+  hidden_layers: [512, 512, 512, 512]
   num_epochs: 1000
   batch_size: 256
-  patience: 5
+  patience: 25
   lr: 0.001

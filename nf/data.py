@@ -132,11 +132,13 @@ def prepare_DLPFC_data(
 
     clustering = XeniumCluster(data=section.X, dataset_name="DLPFC")
     clustering.xenium_spot_data = section
+    clustering.xenium_spot_data.X = clustering.xenium_spot_data.X.A
     if log_normalize:
         clustering.xenium_spot_data.X = np.log1p(clustering.xenium_spot_data.X)
 
     sc.tl.pca(clustering.xenium_spot_data, svd_solver='arpack', n_comps=num_pcs)
     data = clustering.xenium_spot_data.obsm["X_pca"]
+    clustering.xenium_spot_data.obs.rename(columns={"array_row": "row", "array_col": "col"}, inplace=True)
 
     return data, spatial_locations, clustering
 

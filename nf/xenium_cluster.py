@@ -45,6 +45,12 @@ class XeniumCluster:
                 "/".join([f"{key}={value}" for key, value in kwargs.items()]),
                 "clusters"
             )
+        elif self.dataset_name == "DLPFC":
+            self.target_dir = os.path.join(
+                f"results/{self.dataset_name}/{method}/",
+                "/".join([f"{key}={value}" for key, value in kwargs.items()]),
+                "clusters"
+            )
         else:
             raise NotImplementedError("Dataset not supported.")
 
@@ -366,8 +372,8 @@ class XeniumCluster:
             clusters = torch.tensor(data.obs["cluster"].astype(int))
             num_clusters = clusters.unique().size(0)
 
-            num_rows = int(max(rows) - min(rows) + 1)
-            num_cols = int(max(cols) - min(cols) + 1)
+            num_rows = max(rows) + 1
+            num_cols = max(cols) + 1
 
             cluster_grid = torch.zeros((num_rows, num_cols), dtype=torch.int)
 

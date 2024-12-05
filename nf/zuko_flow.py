@@ -81,11 +81,13 @@ def setup_zuko_flow(flow_type: str, num_clusters: int, flow_length: int = 1, con
                 context=context_length,
                 transforms=flow_length,
                 hidden_features=hidden_layers,
+                activation=torch.nn.Tanh
             )
         case "CNF":
             cluster_probs_flow_dist = zuko.flows.CNF(
                 features=num_clusters,
                 context=context_length,
+                activation=torch.nn.Tanh
             )
         case "GF":
             cluster_probs_flow_dist = zuko.flows.GF(
@@ -93,6 +95,7 @@ def setup_zuko_flow(flow_type: str, num_clusters: int, flow_length: int = 1, con
                 context=context_length,
                 transforms=flow_length,
                 components=num_clusters,
+                activation=torch.nn.Tanh
             )
         case "MNN":
             raise NotImplementedError("This flow isn't supported yet")
@@ -101,6 +104,7 @@ def setup_zuko_flow(flow_type: str, num_clusters: int, flow_length: int = 1, con
                 features=num_clusters,
                 context=context_length,
                 transforms=flow_length,
+                activation=torch.nn.Tanh,
                 signal=16
             )
         case "UMNN":
@@ -110,6 +114,7 @@ def setup_zuko_flow(flow_type: str, num_clusters: int, flow_length: int = 1, con
                 features=num_clusters,
                 context=context_length,
                 transforms=flow_length,
+                activation=torch.nn.Tanh,
                 signal=16
             )
         case "BPF":

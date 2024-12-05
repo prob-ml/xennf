@@ -151,12 +151,14 @@ def custom_cluster_initialization(original_adata, method, K=17, num_pcs=3):
 
 def prepare_data(config):
 
-    gene_data, spatial_locations, original_adata, TRUE_PRIOR_WEIGHTS = prepare_synthetic_data(
-        num_clusters=config.data.num_clusters, 
-        data_dimension=config.data.data_dimension
-    )
-    prior_means = torch.zeros(config.data.num_clusters, gene_data.shape[1])
-    prior_scales = torch.ones(config.data.num_clusters, gene_data.shape[1])
+    if config.data.dataset == "SYNTHETIC":
+        gene_data, spatial_locations, original_adata, TRUE_PRIOR_WEIGHTS = prepare_synthetic_data(
+            num_clusters=config.data.num_clusters, 
+            data_dimension=config.data.data_dimension
+        )
+    elif config.data.dataset == "DLPFC":
+        gene_data, spatial_locations, original_adata = prepare_DLPFC_data(151673, num_pcs=config.data.num_pcs)
+        TRUE_PRIOR_WEIGHTS = None
 
     # clamping
     MIN_CONCENTRATION = config.VI.min_concentration
@@ -201,8 +203,6 @@ def prepare_data(config):
 
         # Select priors in the neighborhood
         priors_in_neighborhood = cluster_probs_prior[neighboring_spot_indexes[i]]
-        # print(f"Spot {i} has {len(neighboring_spot_indexes[i])} neighbors")
-        # print(priors_in_neighborhood)
 
         # Compute the sum or mean, or apply a custom weighting function
         if config.data.neighborhood_agg == "mean":
@@ -271,7 +271,7 @@ def train(
     scheduler = Adam(per_param_callable)
 
     # Setup the inference algorithm
-    svi = SVI(model, guide, scheduler, loss=TraceMeanField_ELBO(num_particles=config.VI.num_particles, vectorize_particles=False))
+    svi = SVI(model, guide, scheduler, loss=TraceMeanField_ELBO(num_particles=config.VI.num_particles, vectorize_particles=True))
 
     epoch_pbar = tqdm(range(NUM_EPOCHS))
     current_min_loss = float('inf')
@@ -311,58 +311,64 @@ def posterior_eval(
 
     cluster_probs_samples = []
     batch_size = config.flows.batch_size
-    num_batches = math.ceil(len(data) / batch_size)
 
     with torch.no_grad():
-        for _ in range(config.VI.num_posterior_samples):
-            batch_probs_samples = []
-            for batch_idx in range(num_batches):
-                batch_data = data[batch_idx * batch_size: (batch_idx + 1) * batch_size]
-                with pyro.plate("data", len(batch_data)):
-                    cluster_probs_sample = torch.softmax(
-                        pyro.sample("cluster_probs", ZukoToPyro(cluster_probs_flow_dist(batch_data))),
-                        dim=-1
-                    )
-                batch_probs_samples.append(cluster_probs_sample)
-                del batch_data, cluster_probs_sample  # Explicitly delete
-                torch.cuda.empty_cache()
-            cluster_probs_samples.append(torch.cat(batch_probs_samples, dim=0))
+        current_power = 0
+        for sample_num in range(1, config.VI.num_posterior_samples + 1):
+            cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)), infer={'is_auxiliary': True})
+            temperature = pyro.param("temperature")
 
-    cluster_probs_avg = torch.stack(cluster_probs_samples).mean(dim=0)
-    cluster_assignments_posterior = cluster_probs_avg.argmax(dim=-1)
+            # Make the logits numerically stable
+            max_logit = torch.max(cluster_logits, dim=-1, keepdim=True).values
+            stable_logits = cluster_logits - max_logit
+            with pyro.plate("data", len(data)):
+                cluster_probs_sample = pyro.sample(
+                    "cluster_probs",
+                    dist.RelaxedOneHotCategorical(temperature=temperature, logits=stable_logits, validate_args=False)
+                )
+            torch.cuda.empty_cache()
+            cluster_probs_samples.append(cluster_probs_sample)
+            del cluster_probs_sample  # Explicitly delete
 
-    rows = spatial_locations["row"].astype(int)
-    columns = spatial_locations["col"].astype(int)
+            if sample_num == config.VI.num_posterior_samples or sample_num == 10**current_power:
 
-    num_rows = max(rows) + 1
-    num_cols = max(columns) + 1
+                cluster_probs_avg = torch.stack(cluster_probs_samples).mean(dim=0)
+                cluster_assignments_posterior = cluster_probs_avg.argmax(dim=-1)
 
-    cluster_grid = torch.zeros((num_rows, num_cols), dtype=torch.long)
+                rows = spatial_locations["row"].astype(int)
+                columns = spatial_locations["col"].astype(int)
 
-    cluster_grid[rows, columns] = cluster_assignments_posterior + 1
+                num_rows = max(rows) + 1
+                num_cols = max(columns) + 1
 
-    colors = plt.cm.get_cmap('viridis', config.data.num_clusters + 1)
+                cluster_grid = torch.zeros((num_rows, num_cols), dtype=torch.long)
 
-    plt.figure(figsize=(6, 6))
-    plt.imshow(cluster_grid.cpu(), cmap=colors, interpolation='nearest', origin='lower')
-    plt.colorbar(ticks=range(1, config.data.num_clusters + 1), label='Cluster Values')
-    plt.title('Posterior Cluster Assignment with XenNF')
+                cluster_grid[rows, columns] = cluster_assignments_posterior + 1
 
-    if not os.path.exists(xennf_clusters_filepath := save_filepath(config)):
-        os.makedirs(xennf_clusters_filepath)
-    _ = plt.savefig(
-        f"{xennf_clusters_filepath}/result.png"
-    )
+                colors = plt.cm.get_cmap('viridis', config.data.num_clusters + 1)
 
-    if config.data.dataset == "SYNTHETIC":
-        ari = ARI(cluster_assignments_posterior.cpu(), true_prior_weights.argmax(axis=-1))
-        nmi = NMI(cluster_assignments_posterior.cpu(), true_prior_weights.argmax(axis=-1))
-        cluster_metrics = {
-            "ARI": ari,
-            "NMI": nmi
-        }
-        with open(f"{xennf_clusters_filepath}/cluster_metrics.json", 'w') as fp:
-            json.dump(cluster_metrics, fp)
+                plt.figure(figsize=(6, 6))
+                plt.imshow(cluster_grid.cpu(), cmap=colors, interpolation='nearest', origin='lower')
+                plt.colorbar(ticks=range(1, config.data.num_clusters + 1), label='Cluster Values')
+                plt.title('Posterior Cluster Assignment with XenNF')
+
+                if not os.path.exists(xennf_clusters_filepath := save_filepath(config)):
+                    os.makedirs(xennf_clusters_filepath)
+                _ = plt.savefig(
+                    f"{xennf_clusters_filepath}/result_nsamples={sample_num}.png"
+                )
+
+                if config.data.dataset == "SYNTHETIC":
+                    ari = ARI(cluster_assignments_posterior.cpu(), true_prior_weights.argmax(axis=-1))
+                    nmi = NMI(cluster_assignments_posterior.cpu(), true_prior_weights.argmax(axis=-1))
+                    cluster_metrics = {
+                        "ARI": ari,
+                        "NMI": nmi
+                    }
+                    with open(f"{xennf_clusters_filepath}/cluster_metrics_nsamples={sample_num}.json", 'w') as fp:
+                        json.dump(cluster_metrics, fp)
+
+                current_power += 1
 
 
 if __name__ == "__main__":
@@ -392,7 +398,7 @@ if __name__ == "__main__":
     pyro.clear_param_store()
     expected_total_param_dim = 2 # K x D
     warnings.filterwarnings("ignore")
-    config = OmegaConf.load('config/config3.yaml')
+    config = OmegaConf.load('config/config1.yaml')
 
     (
         data, 
@@ -419,7 +425,7 @@ if __name__ == "__main__":
         # Define priors for the cluster assignment probabilities and Gaussian parameters
         with pyro.plate("data", len(data), subsample_size=config.flows.batch_size) as ind:
             batch_data = data[ind]
-            
+            print(batch_data[:5])
             prior_dist = Potts2D(cluster_states, ind, radius=config.data.neighborhood_size, num_clusters=config.data.num_clusters)
             cluster_probs = pyro.sample("cluster_probs", prior_dist)
             cluster_states = prior_dist.current_state
@@ -428,7 +434,7 @@ if __name__ == "__main__":
                 pyro.sample(f"obs", dist.MixtureOfDiagNormals(
                         cluster_means.unsqueeze(0).expand(config.flows.batch_size, -1, -1), 
                         cluster_scales.unsqueeze(0).expand(config.flows.batch_size, -1, -1), 
-                        cluster_probs
+                        torch.log(cluster_probs)
                     ), 
                     obs=batch_data
                 )
@@ -437,7 +443,7 @@ if __name__ == "__main__":
                 pyro.sample(f"obs", dist.MixtureOfDiagNormals(
                         cluster_means.unsqueeze(1).expand(-1, config.flows.batch_size, -1, -1), 
                         cluster_scales.unsqueeze(1).expand(-1, config.flows.batch_size, -1, -1), 
-                        cluster_probs
+                        torch.log(cluster_probs)
                     ), 
                     obs=batch_data
                 )
@@ -473,7 +479,7 @@ if __name__ == "__main__":
             cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(batch_data)), infer={'is_auxiliary': True})
             temperature = pyro.param(
                 "temperature",
-                torch.tensor(2.2),
+                torch.tensor(0.75),
                 constraint=dist.constraints.positive
             )
 
