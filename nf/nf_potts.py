@@ -1,6 +1,7 @@
 import torch
 import zuko
 import numpy as np
+import pandas as pd
 from torch import Size, Tensor
 import pyro
 from pyro.infer import SVI, Trace_ELBO, TraceMeanField_ELBO
@@ -126,19 +127,19 @@ class Potts2D(dist.Distribution):
 
         return log_prob_tensor  # Return the sum of all values in log_prob_tensor
 
-def custom_cluster_initialization(original_adata, method, K=17, num_pcs=3):
+def custom_cluster_initialization(original_adata, method, K=17, num_pcs=3, resolution=0.45):
 
     original_adata.generate_neighborhood_graph(original_adata.xenium_spot_data, plot_pcas=False)
 
     # This function initializes clusters based on the specified method
     if method == "K-Means":
-        initial_clusters = original_adata.KMeans(original_adata.xenium_spot_data, save_plot=False, K=K, include_spatial=False)
+        initial_clusters = original_adata.KMeans(original_adata.xenium_spot_data, save_plot=False, K=K, include_spatial=False, use_pca=True)
     elif method == "Hierarchical":
         initial_clusters = original_adata.Hierarchical(original_adata.xenium_spot_data, save_plot=True, num_clusters=K)
     elif method == "Leiden":
-        initial_clusters = original_adata.Leiden(original_adata.xenium_spot_data, resolutions=[0.35], save_plot=False, K=K)[0.35]
+        initial_clusters = original_adata.Leiden(original_adata.xenium_spot_data, resolutions=[resolution], save_plot=False, K=K)[resolution]
     elif method == "Louvain":
-        initial_clusters = original_adata.Louvain(original_adata.xenium_spot_data, resolutions=[0.35], save_plot=False, K=K)[0.35]
+        initial_clusters = original_adata.Louvain(original_adata.xenium_spot_data, resolutions=[resolution], save_plot=False, K=K)[resolution]
     elif method == "mclust":
         original_adata.pca(original_adata.xenium_spot_data, num_pcs)
         initial_clusters = original_adata.mclust(original_adata.xenium_spot_data, G=K, model_name = "EEE")
@@ -174,18 +175,33 @@ def prepare_data(config):
     num_rows = max(rows) + 1
     num_cols = max(columns) + 1
 
-    initial_clusters = custom_cluster_initialization(original_adata, config.data.init_method, K=config.data.num_clusters, num_pcs=config.data.num_pcs)
+    initial_clusters = custom_cluster_initialization(original_adata, config.data.init_method, K=config.data.num_clusters, num_pcs=config.data.num_pcs, resolution=config.data.resolution)
+
+    if config.data.dataset == "SYNTHETIC":
+        ari = ARI(initial_clusters, TRUE_PRIOR_WEIGHTS.argmax(axis=-1))
+        nmi = NMI(initial_clusters, TRUE_PRIOR_WEIGHTS.argmax(axis=-1))
+        cluster_metrics = {
+            "ARI": round(ari, 3),
+            "NMI": round(nmi, 3)
+        }
+        print(f"{config.data.init_method} Metrics: ", cluster_metrics)
+
+        with open(f"{original_adata.target_dir}/cluster_metrics.json", 'w') as fp:
+            json.dump(cluster_metrics, fp)
 
     empirical_prior_means = torch.zeros(config.data.num_clusters, gene_data.shape[1])
     empirical_prior_scales = torch.ones(config.data.num_clusters, gene_data.shape[1])
+    print(np.unique(initial_clusters))
     if config.VI.empirical_prior:
         for i in range(config.data.num_clusters):
             cluster_data = gene_data[initial_clusters == i]
-            if cluster_data.size > 0:  # Check if there are any elements in the cluster_data
+            if len(cluster_data) > 1:  # Check if there are any elements in the cluster_data
                 empirical_prior_means[i] = torch.tensor(cluster_data.mean(axis=0))
                 empirical_prior_scales[i] = torch.tensor(cluster_data.std(axis=0))
+            else:
+                raise ValueError("Not all clusters have a data point.")
     cluster_probs_prior = torch.zeros((initial_clusters.shape[0], config.data.num_clusters))
-    cluster_probs_prior[torch.arange(initial_clusters.shape[0]), initial_clusters - 1] = 1.
+    cluster_probs_prior[torch.arange(initial_clusters.shape[0]), initial_clusters] = 1.
 
     locations_tensor = torch.tensor(spatial_locations.to_numpy())
 
@@ -282,10 +298,7 @@ def train(
             loss = svi.step(data)
             running_loss += loss / config.flows.batch_size
         epoch_pbar.set_description(f"Epoch {epoch} : loss = {round(running_loss, 4)}")
-        # if (epoch % 10 == 0 or epoch == 1) and config.data.dataset == "SYNTHETIC":
-        #     ari = ARI(cluster_assignments_posterior, true_prior_weights.argmax(dim=-1))
-        #     nmi = NMI(cluster_assignments_posterior, true_prior_weights.argmax(dim=-1))
-        #     print(f"ARI = {round(ari, 2)} NMI = {round(nmi, 2)}")
+
         if running_loss > current_min_loss:
             patience_counter += 1
         else:
@@ -305,7 +318,9 @@ def save_filepath(config):
 def posterior_eval(
         data, 
         spatial_locations,  
-        config, 
+        original_adata,
+        config,
+        spatial_cluster_probs_prior, 
         true_prior_weights=None
     ):
 
@@ -361,12 +376,25 @@ def posterior_eval(
                 if config.data.dataset == "SYNTHETIC":
                     ari = ARI(cluster_assignments_posterior.cpu(), true_prior_weights.argmax(axis=-1))
                     nmi = NMI(cluster_assignments_posterior.cpu(), true_prior_weights.argmax(axis=-1))
-                    cluster_metrics = {
-                        "ARI": ari,
-                        "NMI": nmi
-                    }
-                    with open(f"{xennf_clusters_filepath}/cluster_metrics_nsamples={sample_num}.json", 'w') as fp:
-                        json.dump(cluster_metrics, fp)
+                
+                elif config.data.dataset == "DLPFC":
+                    # Create a DataFrame for easier handling
+                    data = pd.DataFrame({
+                        'ClusterAssignments': cluster_assignments_posterior.cpu().numpy(),
+                        'Region': original_adata.xenium_spot_data.obs["Region"]
+                    })
+
+                    # Drop rows where 'Region' is NaN
+                    filtered_data = data.dropna(subset=['Region'])
+                    ari = ARI(filtered_data['ClusterAssignments'], filtered_data['Region'])
+                    nmi = NMI(filtered_data['ClusterAssignments'], filtered_data['Region'])
+
+                cluster_metrics = {
+                    "ARI": round(ari, 3),
+                    "NMI": round(nmi, 3)
+                }
+                with open(f"{xennf_clusters_filepath}/cluster_metrics_nsamples={sample_num}.json", 'w') as fp:
+                    json.dump(cluster_metrics, fp)
 
                 current_power += 1
 
@@ -425,7 +453,6 @@ if __name__ == "__main__":
         # Define priors for the cluster assignment probabilities and Gaussian parameters
         with pyro.plate("data", len(data), subsample_size=config.flows.batch_size) as ind:
             batch_data = data[ind]
-            print(batch_data[:5])
             prior_dist = Potts2D(cluster_states, ind, radius=config.data.neighborhood_size, num_clusters=config.data.num_clusters)
             cluster_probs = pyro.sample("cluster_probs", prior_dist)
             cluster_states = prior_dist.current_state
@@ -494,5 +521,6 @@ if __name__ == "__main__":
             )
 
     # execution
+    print(data.shape)
     train(model, guide, data, config, true_prior_weights)
-    posterior_eval(data, spatial_locations, config, true_prior_weights)
+    posterior_eval(data, spatial_locations, original_adata, config, cluster_states, true_prior_weights)

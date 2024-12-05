@@ -2,6 +2,7 @@ data:
   dataset: "SYNTHETIC"
   data_dimension: 5
   num_clusters: 7
+  resolution: 0.45
   num_pcs: 3
   init_method: "K-Means"
   neighborhood_size: 1

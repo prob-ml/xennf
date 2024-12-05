@@ -87,6 +87,7 @@ def setup_zuko_flow(flow_type: str, num_clusters: int, flow_length: int = 1, con
             cluster_probs_flow_dist = zuko.flows.CNF(
                 features=num_clusters,
                 context=context_length,
+                hidden_features=hidden_layers,
                 activation=torch.nn.Tanh
             )
         case "GF":
@@ -95,6 +96,7 @@ def setup_zuko_flow(flow_type: str, num_clusters: int, flow_length: int = 1, con
                 context=context_length,
                 transforms=flow_length,
                 components=num_clusters,
+                hidden_features=hidden_layers,
                 activation=torch.nn.Tanh
             )
         case "MNN":
@@ -104,6 +106,7 @@ def setup_zuko_flow(flow_type: str, num_clusters: int, flow_length: int = 1, con
                 features=num_clusters,
                 context=context_length,
                 transforms=flow_length,
+                hidden_features=hidden_layers,
                 activation=torch.nn.Tanh,
                 signal=16
             )
@@ -114,6 +117,7 @@ def setup_zuko_flow(flow_type: str, num_clusters: int, flow_length: int = 1, con
                 features=num_clusters,
                 context=context_length,
                 transforms=flow_length,
+                hidden_features=hidden_layers,
                 activation=torch.nn.Tanh,
                 signal=16
             )
@@ -125,12 +129,16 @@ def setup_zuko_flow(flow_type: str, num_clusters: int, flow_length: int = 1, con
             cluster_probs_flow_dist = zuko.flows.NCSF(
                 features=num_clusters,
                 context=context_length,
+                hidden_features=hidden_layers,
+                activation=torch.nn.Tanh,
                 bins=16
             )
         case "NSF":
             cluster_probs_flow_dist = zuko.flows.NSF(
                 features=num_clusters,
                 context=context_length,
+                hidden_features=hidden_layers,
+                activation=torch.nn.Tanh,
                 bins=16
             )
 

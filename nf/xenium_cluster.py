@@ -43,7 +43,7 @@ class XeniumCluster:
             self.target_dir = os.path.join(
                 f"results/{self.dataset_name}/{method}/",
                 "/".join([f"{key}={value}" for key, value in kwargs.items()]),
-                "clusters"
+                f"clusters/{self.SPOT_SIZE}"
             )
         elif self.dataset_name == "DLPFC":
             self.target_dir = os.path.join(
@@ -174,8 +174,8 @@ class XeniumCluster:
             clusters = torch.tensor(data.obs[f'leiden_{resolution}'].astype(int))
             num_clusters = clusters.unique().size(0)
 
-            num_rows = int(max(rows) - min(rows) + 1)
-            num_cols = int(max(cols) - min(cols) + 1)
+            num_rows = max(rows) + 1
+            num_cols = max(cols) + 1
 
             cluster_grid = torch.zeros((num_rows, num_cols), dtype=torch.int)
 
@@ -229,8 +229,8 @@ class XeniumCluster:
             clusters = torch.tensor(data.obs[f'louvain_{resolution}'].astype(int))
             num_clusters = clusters.unique().size(0)
 
-            num_rows = int(max(rows) - min(rows) + 1)
-            num_cols = int(max(cols) - min(cols) + 1)
+            num_rows = max(rows) + 1
+            num_cols = max(cols) + 1
 
             cluster_grid = torch.zeros((num_rows, num_cols), dtype=torch.int)
 
@@ -261,6 +261,7 @@ class XeniumCluster:
             groupby: List[str] = ["spot_number"],
             embedding: str = "umap",
             include_spatial = True,
+            use_pca = False,
             **kwargs
         ):
 
@@ -311,8 +312,8 @@ class XeniumCluster:
         clusters = torch.tensor(data.obs[key_added].astype(int))
         num_clusters = clusters.unique().size(0)
 
-        num_rows = int(max(rows) - min(rows) + 1)
-        num_cols = int(max(cols) - min(cols) + 1)
+        num_rows = max(rows) + 1
+        num_cols = max(cols) + 1
 
         cluster_grid = torch.zeros((num_rows, num_cols), dtype=torch.int)
 
@@ -334,7 +335,7 @@ class XeniumCluster:
             f"{self.target_dir}/clusters_K={num_clusters}.png"
         )
 
-        return data.obs[key_added].values.astype(int)
+        return data.obs[key_added].values.astype(int) - 1
 
     def KMeans(
             self,
@@ -343,15 +344,22 @@ class XeniumCluster:
             include_spatial=True,
             normalize=True,
             save_plot=True,
+            use_pca = False,
         ):
             
-            spatial_init_data = data.X
+            if use_pca:
+                try:
+                    spatial_init_data = data.obsm["X_pca"]
+                except KeyError:
+                    spatial_init_data = data.X
+            else:
+                spatial_init_data = data.X
 
             if include_spatial:
 
                 spatial_locations = data.obs[["row", "col"]]
 
-                spatial_init_data = np.concatenate((spatial_locations, data.X), axis=1)
+                spatial_init_data = np.concatenate((spatial_locations, spatial_init_data), axis=1)
 
             if normalize:
 
@@ -418,7 +426,7 @@ class XeniumCluster:
             subprocess.run(command, check=True, capture_output=True)
 
         run_r_script("xenium_BayesSpace.R", self.dataset_name, f"{self.SPOT_SIZE}", f"{init_method}", f"{num_pcs}", f"{K}", f"{grid_search}")
-        self.target_dir_setter("BayesSpace", num_pcs=3, K=K, INIT=init_method)
+        self.target_dir_setter("BayesSpace", num_pcs=num_pcs, K=K, INIT=init_method)
         os.makedirs(self.target_dir, exist_ok=True)
         gammas = np.linspace(1, 3, 9) if grid_search else [2]
         for gamma in gammas:
@@ -432,8 +440,8 @@ class XeniumCluster:
             clusters = torch.tensor(data.obs["cluster"].astype(int))
             num_clusters = clusters.unique().size(0)
 
-            num_rows = int(max(rows) - min(rows) + 1)
-            num_cols = int(max(cols) - min(cols) + 1)
+            num_rows = max(rows) + 1
+            num_cols = max(cols) + 1
 
             cluster_grid = torch.zeros((num_rows, num_cols), dtype=torch.int)
 
@@ -480,13 +488,18 @@ class XeniumCluster:
             str: The standard output from the R script.
             """
             command = ["Rscript", script_path] + list(args)
-            result = subprocess.run(command, check=True, capture_output=True, text=True)
-            return result.stdout
-
-        np.savetxt(temp_dir, data.obsm["X_pca"], delimiter=",")
-        num_output_clusters = run_r_script("mclust.R", temp_dir, f"{G}", f"{data.obsm['X_pca'].shape[1]}", f"{self.SPOT_SIZE}", self.dataset_name)
+            try:
+                result = subprocess.run(command, check=True, capture_output=True, text=True)
+                return result.stdout
+            except subprocess.CalledProcessError as e:
+                print(f"An error occurred while running the R script: {e.output}")
+                raise
+        try:
+            np.savetxt(temp_dir, data.obsm["X_pca"], delimiter=",")
+        except KeyError:
+            raise KeyError("PCA is required for this model to work.")
         self.target_dir_setter("mclust", num_pcs=data.obsm['X_pca'].shape[1], K=G)
-        
+        num_output_clusters = run_r_script("mclust.R", temp_dir, f"{G}", f"{data.obsm['X_pca'].shape[1]}", f"{self.SPOT_SIZE}", self.dataset_name, self.target_dir)
 
         mclust_clusters = pd.read_csv(f"{self.target_dir}/clusters_K={G}.csv", index_col=0)
         data.obs["cluster"] = np.array(mclust_clusters["mclust cluster"])
@@ -496,8 +509,8 @@ class XeniumCluster:
         cols = torch.tensor(data.obs["col"].astype(int))
         clusters = torch.tensor(data.obs["cluster"].astype(int))
         num_clusters = clusters.unique().size(0)
-        num_rows = int(max(rows) - min(rows) + 1)
-        num_cols = int(max(cols) - min(cols) + 1)
+        num_rows = max(rows) + 1
+        num_cols = max(cols) + 1
 
         cluster_grid = torch.zeros((num_rows, num_cols), dtype=torch.int)
 
