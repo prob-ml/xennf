@@ -127,15 +127,22 @@ class Potts2D(dist.Distribution):
 
         return log_prob_tensor  # Return the sum of all values in log_prob_tensor
 
-def custom_cluster_initialization(original_adata, method, K=17, num_pcs=3, resolution=0.45):
+def custom_cluster_initialization(original_adata, method, K=17, num_pcs=3, resolution=0.45, dataset="SYNTHETIC"):
 
-    original_adata.generate_neighborhood_graph(original_adata.xenium_spot_data, plot_pcas=False)
+    # this is important for graph based methods
+    original_adata.generate_neighborhood_graph(original_adata.xenium_spot_data, n_neighbors=15, n_pcs=num_pcs, plot_pcas=False)
 
     # This function initializes clusters based on the specified method
     if method == "K-Means":
-        initial_clusters = original_adata.KMeans(original_adata.xenium_spot_data, save_plot=False, K=K, include_spatial=False, use_pca=True)
+        if dataset == "DLPFC":
+            initial_clusters = original_adata.KMeans(original_adata.xenium_spot_data, save_plot=False, K=K, include_spatial=False, use_pca=True)
+        else:
+            initial_clusters = original_adata.KMeans(original_adata.xenium_spot_data, save_plot=False, K=K, include_spatial=False, use_pca=False)            
     elif method == "Hierarchical":
-        initial_clusters = original_adata.Hierarchical(original_adata.xenium_spot_data, save_plot=True, num_clusters=K)
+        if dataset == "DLPFC":
+            initial_clusters = original_adata.Hierarchical(original_adata.xenium_spot_data, save_plot=True, num_clusters=K, use_pca=True, include_spatial=False)
+        else:
+            initial_clusters = original_adata.Hierarchical(original_adata.xenium_spot_data, save_plot=True, num_clusters=K, use_pca=True, include_spatial=False)
     elif method == "Leiden":
         initial_clusters = original_adata.Leiden(original_adata.xenium_spot_data, resolutions=[resolution], save_plot=False, K=K)[resolution]
     elif method == "Louvain":
@@ -175,11 +182,32 @@ def prepare_data(config):
     num_rows = max(rows) + 1
     num_cols = max(columns) + 1
 
-    initial_clusters = custom_cluster_initialization(original_adata, config.data.init_method, K=config.data.num_clusters, num_pcs=config.data.num_pcs, resolution=config.data.resolution)
+    initial_clusters = custom_cluster_initialization(original_adata, config.data.init_method, K=config.data.num_clusters, num_pcs=config.data.num_pcs, resolution=config.data.resolution, dataset=config.data.dataset)
 
     if config.data.dataset == "SYNTHETIC":
         ari = ARI(initial_clusters, TRUE_PRIOR_WEIGHTS.argmax(axis=-1))
         nmi = NMI(initial_clusters, TRUE_PRIOR_WEIGHTS.argmax(axis=-1))
+        cluster_metrics = {
+            "ARI": round(ari, 3),
+            "NMI": round(nmi, 3)
+        }
+        print(f"{config.data.init_method} Metrics: ", cluster_metrics)
+
+        with open(f"{original_adata.target_dir}/cluster_metrics.json", 'w') as fp:
+            json.dump(cluster_metrics, fp)
+
+    elif config.data.dataset == "DLPFC":
+        # Create a DataFrame for easier handling
+        cluster_data = pd.DataFrame({
+            'ClusterAssignments': initial_clusters,
+            'Region': original_adata.xenium_spot_data.obs["Region"]
+        })
+
+        # Drop rows where 'Region' is NaN
+        filtered_data = cluster_data.dropna(subset=['Region'])
+        ari = ARI(filtered_data['ClusterAssignments'], filtered_data['Region'])
+        nmi = NMI(filtered_data['ClusterAssignments'], filtered_data['Region'])
+
         cluster_metrics = {
             "ARI": round(ari, 3),
             "NMI": round(nmi, 3)
@@ -321,11 +349,15 @@ def posterior_eval(
         original_adata,
         config,
         spatial_cluster_probs_prior, 
-        true_prior_weights=None
+        true_prior_weights=None,
+        loading_trained_model=False
     ):
 
     cluster_probs_samples = []
     batch_size = config.flows.batch_size
+
+    if loading_trained_model:
+        pyro.module("posterior_flow", cluster_probs_flow_dist, update_module_params=True)
 
     with torch.no_grad():
         current_power = 0
@@ -373,19 +405,32 @@ def posterior_eval(
                     f"{xennf_clusters_filepath}/result_nsamples={sample_num}.png"
                 )
 
+                # no axis version save for writeup
+                plt.figure(figsize=(6, 6))
+                plt.imshow(cluster_grid.cpu(), cmap=colors, interpolation='nearest', origin='lower', extent=(0, num_cols, 0, num_rows), aspect='auto')
+                plt.axis('off')
+
+                if not os.path.exists(xennf_clusters_filepath := save_filepath(config)):
+                    os.makedirs(xennf_clusters_filepath)
+                _ = plt.savefig(
+                    f"{xennf_clusters_filepath}/simple_result_nsamples={sample_num}.png",
+                    bbox_inches='tight',
+                    pad_inches=0
+                )
+
                 if config.data.dataset == "SYNTHETIC":
                     ari = ARI(cluster_assignments_posterior.cpu(), true_prior_weights.argmax(axis=-1))
                     nmi = NMI(cluster_assignments_posterior.cpu(), true_prior_weights.argmax(axis=-1))
                 
                 elif config.data.dataset == "DLPFC":
                     # Create a DataFrame for easier handling
-                    data = pd.DataFrame({
+                    cluster_data = pd.DataFrame({
                         'ClusterAssignments': cluster_assignments_posterior.cpu().numpy(),
                         'Region': original_adata.xenium_spot_data.obs["Region"]
                     })
 
                     # Drop rows where 'Region' is NaN
-                    filtered_data = data.dropna(subset=['Region'])
+                    filtered_data = cluster_data.dropna(subset=['Region'])
                     ari = ARI(filtered_data['ClusterAssignments'], filtered_data['Region'])
                     nmi = NMI(filtered_data['ClusterAssignments'], filtered_data['Region'])
 
@@ -400,6 +445,11 @@ def posterior_eval(
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Train the normalizing flow or load existing parameters.")
+    parser.add_argument("-l", "--load_model", action="store_true", default=False, help="Load a pre-trained model.")
+    args = parser.parse_args()
 
     # cuda setup
     if torch.cuda.is_available():
@@ -520,7 +570,26 @@ if __name__ == "__main__":
                 dist.RelaxedOneHotCategorical(temperature=temperature, logits=stable_logits)
             )
 
-    # execution
-    print(data.shape)
-    train(model, guide, data, config, true_prior_weights)
+    model_save_path = os.path.join(
+        "/nfs/turbo/lsa-regier/scratch", 
+        "roko/nf_results",
+        save_filepath(config)
+    )
+
+    if args.load_model:
+        print("Loading pre-trained model...")
+        try:
+            model_file = os.path.join(model_save_path, 'model.save')
+            # Ensure the model parameters are loaded to the current GPU
+            pyro.get_param_store().load(model_file, map_location=torch.device(f'cuda:{selected_gpu}'))
+        except FileNotFoundError:
+            raise FileNotFoundError("This model version doesn't have a saved version yet. You need to train it.")
+
+    else:
+        train(model, guide, data, config, true_prior_weights)
+        if not os.path.exists(model_save_path):
+            os.makedirs(model_save_path, exist_ok=True)
+        model_file = os.path.join(model_save_path, 'model.save')
+        pyro.get_param_store().save(model_file)
+
     posterior_eval(data, spatial_locations, original_adata, config, cluster_states, true_prior_weights)

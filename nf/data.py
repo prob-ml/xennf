@@ -50,12 +50,18 @@ def prepare_synthetic_data(
 
     # Plot the clustered grid with flipped y axis
     fig, ax = plt.subplots(figsize=(6, 6)) 
-    ax.imshow(clustered_grid, cmap="tab20", interpolation="nearest", origin='lower')  # Flip y axis by setting origin to 'lower'
+    ax.imshow(clustered_grid, cmap="rainbow", interpolation="nearest", origin='lower')  # Flip y axis by setting origin to 'lower'
     ax.set_title("Ground Truth Clusters")
     plt.colorbar(ax.imshow(clustered_grid, cmap="rainbow", interpolation="nearest", origin='lower'), ax=ax, label="Cluster Level", ticks=range(num_clusters + 1))  # Flip y axis by setting origin to 'lower'
     os.makedirs("results/SYNTHETIC", exist_ok=True)
     plt.savefig("results/SYNTHETIC/ground_truth.png")
-    
+
+    # Create another copy of the image without titles or axes
+    plt.figure(figsize=(6, 6))
+    plt.imshow(clustered_grid, cmap="rainbow", interpolation="nearest", origin='lower')
+    plt.axis('off')  # Remove axes
+    os.makedirs("results/SYNTHETIC", exist_ok=True)
+    plt.savefig("results/SYNTHETIC/ground_truth_no_axes.png", bbox_inches='tight', pad_inches=0.1)
     plt.show()
 
     def find_indices_within_distance(grid, r=1):
@@ -139,6 +145,9 @@ def prepare_DLPFC_data(
     sc.tl.pca(clustering.xenium_spot_data, svd_solver='arpack', n_comps=num_pcs)
     data = clustering.xenium_spot_data.obsm["X_pca"]
     clustering.xenium_spot_data.obs.rename(columns={"array_row": "row", "array_col": "col"}, inplace=True)
+    num_rows = max(clustering.xenium_spot_data.obs["row"]) - min(clustering.xenium_spot_data.obs["row"]) + 1
+    clustering.xenium_spot_data.obs['spot_number'] = clustering.xenium_spot_data.obs["col"] * num_rows + clustering.xenium_spot_data.obs["row"]
+    clustering.xenium_spot_data.obs['spot_number'] = clustering.xenium_spot_data.obs['spot_number'].astype('category')
 
     return data, spatial_locations, clustering
 

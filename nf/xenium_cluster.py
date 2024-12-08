@@ -7,6 +7,7 @@ import numpy as np
 import os
 import subprocess
 import torch
+import warnings
 
 from matplotlib.colors import ListedColormap
 from typing import List
@@ -266,6 +267,15 @@ class XeniumCluster:
         ):
 
         key_added = f'dendrogram_{groupby}'
+
+        if use_pca:
+            try:
+                init_data = data.obsm["X_pca"]
+            except KeyError:
+                warnings.warn("PCA matrix was not found in this anndata object. Using expression dataset X instead.")
+                init_data = data.X
+        else:
+            init_data = data.X
         
         # calculate cluster assignment
         if include_spatial:
@@ -274,18 +284,23 @@ class XeniumCluster:
             norm_col = (data.obs['col'].astype(int) - np.min(data.obs['col'].astype(int))) / np.ptp(data.obs['col'].astype(int))
 
             # Create a temporary copy of X and append normalized spatial coordinates
-            temp_X = np.concatenate([data.X, np.array(norm_row)[:, np.newaxis], np.array(norm_col)[:, np.newaxis]], axis=1)
+            temp_X = np.concatenate([init_data, np.array(norm_row)[:, np.newaxis], np.array(norm_col)[:, np.newaxis]], axis=1)
 
             # Now perform the clustering with the temporary X
-            var=data.var.copy()
-            var = pd.concat((var, pd.DataFrame(index=['norm_row', 'norm_col'])), axis=1)
-            temp_data = sc.AnnData(X=temp_X, obs=data.obs.copy(), var=var)
+            # Create a list of PC components based on the number of variables in init_data
+            var = data.var.copy()
+            if use_pca:
+                num_vars = init_data.shape[1]
+                pc_components = [f"PC{i+1}" for i in range(num_vars)]
+                var = pd.DataFrame(index=pc_components)
+                var = pd.concat((var, pd.DataFrame(index=['norm_row', 'norm_col'])), axis=1)
+            temp_data = sc.AnnData(X=temp_X, obs=data.obs.copy(), var=var, obsm=data.obsm.copy())
 
             # Calculate dendrogram
-            sc.tl.dendrogram(temp_data, groupby=groupby, key_added=key_added)
+            sc.tl.dendrogram(temp_data, groupby=groupby, key_added=key_added, use_rep="X_pca" if use_pca else "X")
             linkage_matrix = temp_data.uns[key_added]['linkage']
         else:
-            sc.tl.dendrogram(data, groupby=groupby, key_added=key_added)
+            sc.tl.dendrogram(data, groupby=groupby, key_added=key_added, use_rep="X_pca" if use_pca else "X")
             linkage_matrix = data.uns[key_added]['linkage']
 
         # Form clusters from the dendrogram
