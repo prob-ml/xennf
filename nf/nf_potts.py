@@ -362,16 +362,15 @@ def posterior_eval(
     with torch.no_grad():
         current_power = 0
         for sample_num in range(1, config.VI.num_posterior_samples + 1):
-            cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)), infer={'is_auxiliary': True})
-            temperature = pyro.param("temperature")
-
-            # Make the logits numerically stable
-            max_logit = torch.max(cluster_logits, dim=-1, keepdim=True).values
-            stable_logits = cluster_logits - max_logit
             with pyro.plate("data", len(data)):
+                cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)), infer={'is_auxiliary': True})
+
+                # Make the logits numerically stable
+                max_logit = torch.max(cluster_logits, dim=-1, keepdim=True).values
+                stable_logits = cluster_logits - max_logit
                 cluster_probs_sample = pyro.sample(
                     "cluster_probs",
-                    dist.RelaxedOneHotCategorical(temperature=temperature, logits=stable_logits, validate_args=False)
+                    dist.Delta(torch.nn.functional.softmax(stable_logits, dim=-1)).to_event(1)
                 )
             torch.cuda.empty_cache()
             cluster_probs_samples.append(cluster_probs_sample)
@@ -550,25 +549,21 @@ if __name__ == "__main__":
                 cluster_means = pyro.sample("cluster_means", dist.Delta(cluster_means_q_mean).to_event(1))
                 cluster_scales = pyro.sample("cluster_scales", dist.Delta(cluster_scales_q_mean).to_event(1))
 
+
         with pyro.plate("data", len(data), subsample_size=config.flows.batch_size) as ind:
             batch_data = data[ind]
 
             cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(batch_data)), infer={'is_auxiliary': True})
-            temperature = pyro.param(
-                "temperature",
-                torch.tensor(0.75),
-                constraint=dist.constraints.positive
-            )
 
             # Make the logits numerically stable
             max_logit = torch.max(cluster_logits, dim=-1, keepdim=True).values
             stable_logits = cluster_logits - max_logit
 
-            # Sample cluster_probs using RelaxedOneHotCategorical
             cluster_probs = pyro.sample(
                 "cluster_probs",
-                dist.RelaxedOneHotCategorical(temperature=temperature, logits=stable_logits)
+                dist.Delta(torch.nn.functional.softmax(stable_logits, dim=-1)).to_event(1)
             )
+
 
     model_save_path = os.path.join(
         "/nfs/turbo/lsa-regier/scratch", 
