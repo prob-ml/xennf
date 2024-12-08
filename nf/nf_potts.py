@@ -338,7 +338,7 @@ def train(
 def save_filepath(config):
     total_file_path = (
         f"results/{config.data.dataset}/XenNF/DATA_DIM={config.data.data_dimension}/"
-        f"K={config.data.num_clusters}/INIT={config.data.init_method}/NEIGHBORSIZE={config.data.neighborhood_size}/"
+        f"K={config.data.num_clusters}/INIT={config.data.init_method}/NEIGHBORSIZE={config.data.neighborhood_size}/GAMMA={config.VI.gamma}/"
         f"FLOW_TYPE={config.flows.flow_type}/FLOW_LENGTH={config.flows.flow_length}/HIDDEN_LAYERS={config.flows.hidden_layers}"
     )
     return total_file_path
@@ -502,7 +502,7 @@ if __name__ == "__main__":
         # Define priors for the cluster assignment probabilities and Gaussian parameters
         with pyro.plate("data", len(data), subsample_size=config.flows.batch_size) as ind:
             batch_data = data[ind]
-            prior_dist = Potts2D(cluster_states, ind, radius=config.data.neighborhood_size, num_clusters=config.data.num_clusters)
+            prior_dist = Potts2D(cluster_states, ind, radius=config.data.neighborhood_size, num_clusters=config.data.num_clusters, gamma=config.VI.gamma)
             cluster_probs = pyro.sample("cluster_probs", prior_dist)
             cluster_states = prior_dist.current_state
             # likelihood for batch
@@ -520,7 +520,7 @@ if __name__ == "__main__":
                         cluster_means.unsqueeze(1).expand(-1, config.flows.batch_size, -1, -1), 
                         cluster_scales.unsqueeze(1).expand(-1, config.flows.batch_size, -1, -1), 
                         torch.log(cluster_probs)
-                    ), 
+                    ),
                     obs=batch_data
                 )
 

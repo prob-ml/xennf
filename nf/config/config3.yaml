@@ -14,6 +14,7 @@ VI:
   num_prior_samples: 100
   num_posterior_samples: 100
   num_particles: 5
+  gamma: 1.5
 flows:
   flow_type: "MAF"
   flow_length: 32
