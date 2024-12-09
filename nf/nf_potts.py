@@ -448,6 +448,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Train the normalizing flow or load existing parameters.")
     parser.add_argument("-l", "--load_model", action="store_true", default=False, help="Load a pre-trained model.")
+    parser.add_argument("-n", "--config_name", default="1", help="The name of the config to use.")
     args = parser.parse_args()
 
     # cuda setup
@@ -475,7 +476,7 @@ if __name__ == "__main__":
     pyro.clear_param_store()
     expected_total_param_dim = 2 # K x D
     warnings.filterwarnings("ignore")
-    config = OmegaConf.load('config/config1.yaml')
+    config = OmegaConf.load(f'config/config_SYNTHETIC/config{args.config_name}.yaml')
 
     (
         data, 
