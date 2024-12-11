@@ -19,6 +19,8 @@ from scipy.spatial import KDTree
 import GPUtil
 import math
 from tqdm import tqdm
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import warnings
 import os
@@ -359,6 +361,14 @@ def posterior_eval(
     if loading_trained_model:
         pyro.module("posterior_flow", cluster_probs_flow_dist, update_module_params=True)
 
+    rows = spatial_locations["row"].astype(int)
+    columns = spatial_locations["col"].astype(int)
+
+    num_rows = max(rows) + 1
+    num_cols = max(columns) + 1
+
+    cluster_grid = torch.zeros((num_rows, num_cols), dtype=torch.long)
+
     with torch.no_grad():
         current_power = 0
         for sample_num in range(1, config.VI.num_posterior_samples + 1):
@@ -380,14 +390,6 @@ def posterior_eval(
 
                 cluster_probs_avg = torch.stack(cluster_probs_samples).mean(dim=0)
                 cluster_assignments_posterior = cluster_probs_avg.argmax(dim=-1)
-
-                rows = spatial_locations["row"].astype(int)
-                columns = spatial_locations["col"].astype(int)
-
-                num_rows = max(rows) + 1
-                num_cols = max(columns) + 1
-
-                cluster_grid = torch.zeros((num_rows, num_cols), dtype=torch.long)
 
                 cluster_grid[rows, columns] = cluster_assignments_posterior + 1
 
@@ -448,7 +450,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Train the normalizing flow or load existing parameters.")
     parser.add_argument("-l", "--load_model", action="store_true", default=False, help="Load a pre-trained model.")
-    parser.add_argument("-n", "--config_name", default="1", help="The name of the config to use.")
+    parser.add_argument("-n", "--config_name", default="0", help="The name of the config to use.")
     args = parser.parse_args()
 
     # cuda setup
@@ -555,22 +557,30 @@ if __name__ == "__main__":
             batch_data = data[ind]
 
             cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(batch_data)), infer={'is_auxiliary': True})
+            temperature = pyro.param(
+                "temperature",
+                torch.tensor(0.75),
+                constraint=dist.constraints.positive
+            )
 
             # Make the logits numerically stable
             max_logit = torch.max(cluster_logits, dim=-1, keepdim=True).values
             stable_logits = cluster_logits - max_logit
 
+            # Sample cluster_probs using RelaxedOneHotCategorical
             cluster_probs = pyro.sample(
                 "cluster_probs",
-                dist.Delta(torch.nn.functional.softmax(stable_logits, dim=-1)).to_event(1)
+                dist.RelaxedOneHotCategorical(temperature=temperature, logits=stable_logits)
             )
-
 
     model_save_path = os.path.join(
         "/nfs/turbo/lsa-regier/scratch", 
         "roko/nf_results",
         save_filepath(config)
     )
+
+    # Set CUDA launch blocking for better error reporting
+    os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
     if args.load_model:
         print("Loading pre-trained model...")
