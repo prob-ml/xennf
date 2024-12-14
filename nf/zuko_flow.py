@@ -72,6 +72,12 @@ class ZukoToPyro(pyro.distributions.TorchDistribution):
 
     def expand(self, *args, **kwargs):
         return ZukoToPyro(self.dist.expand(*args, **kwargs))
+    
+    def rsample(self, sample_shape=torch.Size()):
+        return self.dist.rsample(sample_shape)  # Delegate to the underlying flow
+
+    def sample(self, sample_shape=torch.Size()):
+        return self.dist.sample(sample_shape)  # Delegate to the underlying flow
 
 def setup_zuko_flow(flow_type: str, num_clusters: int, flow_length: int = 1, context_length: int = 0, hidden_layers: Tuple[int, ...] = None):
     match flow_type:

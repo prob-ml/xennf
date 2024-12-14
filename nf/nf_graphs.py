@@ -1,0 +1,597 @@
+import torch
+import zuko
+import numpy as np
+import pandas as pd
+from torch import Size, Tensor
+import pyro
+from pyro.infer import SVI, Trace_ELBO, TraceMeanField_ELBO
+from pyro.optim import Adam, PyroOptim
+
+import pyro.distributions as dist
+import pyro.distributions.transforms as T
+from pyro.distributions.transforms import Spline, ComposeTransform
+from pyro.distributions import TransformedDistribution
+
+import torch_geometric as pyg
+import torch.nn as nn
+from torch_geometric.nn import GCNConv, SGConv, SAGEConv, CuGraphSAGEConv
+from torch_geometric.data import Data
+from torch_geometric import EdgeIndex
+
+from sklearn.preprocessing import StandardScaler
+from scipy.spatial import KDTree
+
+# Utility imports
+import GPUtil
+import math
+from tqdm import tqdm
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import warnings
+import os
+import json
+from utils import ARI, NMI
+
+# Custom module imports
+from xenium_cluster import XeniumCluster
+from data import prepare_DLPFC_data, prepare_synthetic_data, prepare_Xenium_data
+from zuko_flow import setup_zuko_flow, ZukoToPyro
+from omegaconf import OmegaConf
+
+class GCNFlowModel(nn.Module):
+    def __init__(self, original_graph, in_features, num_clusters, conv_type="GCN", neighborhood_size=1):
+        super().__init__()
+        self.x = original_graph.x
+        self.edge_index = original_graph.edge_index
+        self.neighborhood_size = neighborhood_size
+        self.set_layers(in_features, num_clusters, conv_type)
+
+    def set_layers(self, in_features, num_clusters, conv_type):
+        match conv_type:
+            case "GCN":
+                self.layers = nn.ModuleList([
+                    GCNModule(in_features, 64, self.neighborhood_size, conv_type),
+                    nn.ReLU(),
+                    GCNModule(64, 64, self.neighborhood_size, conv_type),
+                    nn.ReLU(),
+                    GCNModule(64, 64, self.neighborhood_size, conv_type),
+                    nn.ReLU(),
+                    GCNModule(64, num_clusters, self.neighborhood_size, conv_type)
+                ])
+            case "SGCN":
+                self.layers =  nn.ModuleList([
+                    GCNModule(in_features, num_clusters, conv_type),
+                ])
+            case "SAGE" | "cuSAGE":
+                self.layers = nn.ModuleList([
+                    GCNModule(in_features, 64, conv_type),
+                    nn.ReLU(),
+                    GCNModule(64, 64, conv_type),
+                    nn.ReLU(),
+                    GCNModule(64, 64, conv_type),
+                    nn.ReLU(),
+                    GCNModule(64, num_clusters, conv_type)
+                ])
+            case _:
+                raise NotImplementedError(f"{conv_type} not supported yet.")
+    
+    def forward(self, x):
+        for i, layer in enumerate(self.layers):
+            if isinstance(layer, GCNModule):
+                x = layer(x, self.edge_index)
+            else:
+                x = layer(x)
+        return x
+
+
+class GCNModule(nn.Module):
+    def __init__(self, in_channels, out_channels, neighborhood_size=1, conv="GCN"):
+        super().__init__()
+        match conv:
+            case "GCN":
+                self.conv = GCNConv(in_channels, out_channels)
+            case "SGCN":
+                self.conv = SGConv(in_channels, out_channels, K=neighborhood_size)
+            case "SAGE":
+                self.conv = SAGEConv(in_channels, out_channels)
+            case "cuSAGE":
+                self.conv = CuGraphSAGEConv(in_channels, out_channels)
+            case _:
+                raise NotImplementedError("This convolutional layer does not have support.")
+
+    def forward(self, x, edge_index):
+        return self.conv(x, edge_index)
+
+def custom_cluster_initialization(original_adata, method, K=17, num_pcs=3, resolution=0.45, dataset="SYNTHETIC"):
+
+    # this is important for graph based methods
+    original_adata.generate_neighborhood_graph(original_adata.xenium_spot_data, n_neighbors=15, n_pcs=num_pcs, plot_pcas=False)
+
+    # This function initializes clusters based on the specified method
+    if method == "K-Means":
+        if dataset == "DLPFC":
+            initial_clusters = original_adata.KMeans(original_adata.xenium_spot_data, save_plot=False, K=K, include_spatial=False, use_pca=True)
+        else:
+            initial_clusters = original_adata.KMeans(original_adata.xenium_spot_data, save_plot=False, K=K, include_spatial=False, use_pca=False)            
+    elif method == "Hierarchical":
+        if dataset == "DLPFC":
+            initial_clusters = original_adata.Hierarchical(original_adata.xenium_spot_data, save_plot=True, num_clusters=K, use_pca=True, include_spatial=False)
+        else:
+            initial_clusters = original_adata.Hierarchical(original_adata.xenium_spot_data, save_plot=True, num_clusters=K, use_pca=True, include_spatial=False)
+    elif method == "Leiden":
+        initial_clusters = original_adata.Leiden(original_adata.xenium_spot_data, resolutions=[resolution], save_plot=False, K=K)[resolution]
+    elif method == "Louvain":
+        initial_clusters = original_adata.Louvain(original_adata.xenium_spot_data, resolutions=[resolution], save_plot=False, K=K)[resolution]
+    elif method == "mclust":
+        original_adata.pca(original_adata.xenium_spot_data, num_pcs)
+        initial_clusters = original_adata.mclust(original_adata.xenium_spot_data, G=K, model_name = "EEE")
+    elif method == "random":
+        initial_clusters = np.random.randint(0, K, size=original_adata.xenium_spot_data.X.shape[0])
+    else:
+        raise ValueError(f"Unknown method: {method}")
+
+    return initial_clusters
+
+def prepare_data(config):
+
+    if config.data.dataset == "SYNTHETIC":
+        gene_data, spatial_locations, original_adata, TRUE_PRIOR_WEIGHTS = prepare_synthetic_data(
+            num_clusters=config.data.num_clusters, 
+            data_dimension=config.data.data_dimension
+        )
+    elif config.data.dataset == "DLPFC":
+        gene_data, spatial_locations, original_adata = prepare_DLPFC_data(151673, num_pcs=config.data.num_pcs)
+        TRUE_PRIOR_WEIGHTS = None
+
+    # clamping
+    MIN_CONCENTRATION = config.VI.min_concentration
+
+    gene_data = StandardScaler().fit_transform(gene_data)
+
+    data = torch.tensor(gene_data).float()
+    num_obs, data_dim = data.shape
+
+    rows = spatial_locations["row"].astype(int)
+    columns = spatial_locations["col"].astype(int)
+
+    num_rows = max(rows) + 1
+    num_cols = max(columns) + 1
+
+    initial_clusters = custom_cluster_initialization(original_adata, config.data.init_method, K=config.data.num_clusters, num_pcs=config.data.num_pcs, resolution=config.data.resolution, dataset=config.data.dataset)
+
+    if config.data.dataset == "SYNTHETIC":
+        ari = ARI(initial_clusters, TRUE_PRIOR_WEIGHTS.argmax(axis=-1))
+        nmi = NMI(initial_clusters, TRUE_PRIOR_WEIGHTS.argmax(axis=-1))
+        cluster_metrics = {
+            "ARI": round(ari, 3),
+            "NMI": round(nmi, 3)
+        }
+        print(f"{config.data.init_method} Metrics: ", cluster_metrics)
+
+        with open(f"{original_adata.target_dir}/cluster_metrics.json", 'w') as fp:
+            json.dump(cluster_metrics, fp)
+
+    elif config.data.dataset == "DLPFC":
+        # Create a DataFrame for easier handling
+        cluster_data = pd.DataFrame({
+            'ClusterAssignments': initial_clusters,
+            'Region': original_adata.xenium_spot_data.obs["Region"]
+        })
+
+        # Drop rows where 'Region' is NaN
+        filtered_data = cluster_data.dropna(subset=['Region'])
+        ari = ARI(filtered_data['ClusterAssignments'], filtered_data['Region'])
+        nmi = NMI(filtered_data['ClusterAssignments'], filtered_data['Region'])
+
+        cluster_metrics = {
+            "ARI": round(ari, 3),
+            "NMI": round(nmi, 3)
+        }
+        print(f"{config.data.init_method} Metrics: ", cluster_metrics)
+
+        with open(f"{original_adata.target_dir}/cluster_metrics.json", 'w') as fp:
+            json.dump(cluster_metrics, fp)
+
+    empirical_prior_means = torch.zeros(config.data.num_clusters, gene_data.shape[1])
+    empirical_prior_scales = torch.ones(config.data.num_clusters, gene_data.shape[1])
+    print(np.unique(initial_clusters))
+    if config.VI.empirical_prior:
+        for i in range(config.data.num_clusters):
+            cluster_data = gene_data[initial_clusters == i]
+            if len(cluster_data) > 1:  # Check if there are any elements in the cluster_data
+                empirical_prior_means[i] = torch.tensor(cluster_data.mean(axis=0))
+                empirical_prior_scales[i] = torch.tensor(cluster_data.std(axis=0))
+            else:
+                raise ValueError("Not all clusters have a data point.")
+    cluster_probs_prior = torch.zeros((initial_clusters.shape[0], config.data.num_clusters))
+    cluster_probs_prior[torch.arange(initial_clusters.shape[0]), initial_clusters] = 1.
+
+    locations_tensor = torch.tensor(spatial_locations.to_numpy())
+
+    # Compute the number of elements in each dimension
+    num_spots = cluster_probs_prior.shape[0]
+
+    # Initialize an empty tensor for spatial concentration priors
+    spatial_cluster_probs_prior = torch.zeros_like(cluster_probs_prior, dtype=torch.float64)
+
+    spot_locations = KDTree(locations_tensor.cpu())  # Ensure this tensor is in host memory
+    neighboring_spot_indexes = spot_locations.query_ball_point(locations_tensor.cpu(), r=config.data.neighborhood_size, p=1, workers=8)
+
+    # Iterate over each spot
+    for i in tqdm(range(num_spots)):
+
+        # Select priors in the neighborhood
+        priors_in_neighborhood = cluster_probs_prior[neighboring_spot_indexes[i]]
+
+        # Compute the sum or mean, or apply a custom weighting function
+        if config.data.neighborhood_agg == "mean":
+            neighborhood_priors = priors_in_neighborhood.mean(dim=0)
+        else:
+            locations = original_adata.xenium_spot_data.obs[["x_location", "y_location", "z_location"]].values
+            neighboring_locations = locations[neighboring_spot_indexes[i]].astype(float)
+            distances = torch.tensor(np.linalg.norm(neighboring_locations - locations[i], axis=1))
+            def distance_weighting(x):
+                weight = 1/(1 + x/1)
+                # print(weight)
+                return weight / weight.sum()
+            neighborhood_priors = (priors_in_neighborhood * distance_weighting(distances).reshape(-1, 1)).sum(dim=0)
+        # Update the cluster probabilities
+        spatial_cluster_probs_prior[i] += neighborhood_priors
+
+    spatial_cluster_probs_prior = spatial_cluster_probs_prior.clamp(MIN_CONCENTRATION)
+    sample_for_assignment_options = [True, False]
+
+    for sample_for_assignment in sample_for_assignment_options:
+
+        if sample_for_assignment:
+            cluster_assignments_prior_TRUE = pyro.sample("cluster_assignments", dist.Categorical(spatial_cluster_probs_prior).expand_by([config.VI.num_prior_samples])).detach().mode(dim=0).values
+            cluster_assignments_prior = cluster_assignments_prior_TRUE
+        else:
+            cluster_assignments_prior_FALSE = spatial_cluster_probs_prior.argmax(dim=1)
+            cluster_assignments_prior = cluster_assignments_prior_FALSE
+
+        # Load the data
+        data = torch.tensor(gene_data).float()
+
+        cluster_grid_PRIOR = torch.zeros((num_rows, num_cols), dtype=torch.long)
+
+        cluster_grid_PRIOR[rows, columns] = cluster_assignments_prior + 1
+
+        colors = plt.cm.get_cmap('viridis', config.data.num_clusters)
+
+        plt.figure(figsize=(6, 6))
+        plt.imshow(cluster_grid_PRIOR.cpu(), cmap=colors, interpolation='nearest', origin='lower')
+        plt.colorbar(ticks=range(1, config.data.num_clusters + 1), label='Cluster Values')
+        plt.title('Prior Cluster Assignment with XenNF')
+
+    return data, spatial_locations, original_adata, spatial_cluster_probs_prior, empirical_prior_means, empirical_prior_scales, TRUE_PRIOR_WEIGHTS, cluster_grid_PRIOR
+
+def train(
+        model, 
+        guide, 
+        data,
+        config,
+        true_prior_weights=None
+    ):
+
+    NUM_EPOCHS = config.flows.num_epochs
+    NUM_BATCHES = int(math.ceil(data.shape[0] / config.flows.batch_size))
+
+    def per_param_callable(param_name):
+        if param_name == 'cluster_means_q_mean':
+            return {"lr": config.flows.lr, "betas": (0.9, 0.999)}
+        elif param_name == 'cluster_scales_q_mean':
+            return {"lr": config.flows.lr, "betas": (0.9, 0.999)}
+        elif "logit" in param_name:
+            return {"lr": config.flows.lr, "betas": (0.9, 0.999)}
+        else:
+            return {"lr": config.flows.lr, "betas": (0.9, 0.999)}
+
+    scheduler = Adam(per_param_callable)
+
+    # Setup the inference algorithm
+    svi = SVI(model, guide, scheduler, loss=TraceMeanField_ELBO(num_particles=config.VI.num_particles, vectorize_particles=True))
+
+    epoch_pbar = tqdm(range(NUM_EPOCHS))
+    current_min_loss = float('inf')
+    patience_counter = 0
+    for epoch in range(1, NUM_EPOCHS + 1):
+        running_loss = 0.0
+        for step in range(NUM_BATCHES):
+            loss = svi.step(data)
+            running_loss += loss / config.flows.batch_size
+        epoch_pbar.set_description(f"Epoch {epoch} : loss = {round(running_loss, 4)}")
+
+        if running_loss > current_min_loss:
+            patience_counter += 1
+        else:
+            current_min_loss = running_loss
+            patience_counter = 0
+        if patience_counter >= config.flows.patience:
+            break
+
+def save_filepath(config):
+    total_file_path = (
+        f"results/{config.data.dataset}/XenNF/DATA_DIM={config.data.data_dimension}/"
+        f"K={config.data.num_clusters}/INIT={config.data.init_method}/NEIGHBORSIZE={config.data.neighborhood_size}/"
+        f"PRIOR_FLOW_TYPE={config.flows.prior_flow_type}/"
+        f"POST_FLOW_TYPE={config.flows.posterior_flow_type}/FLOW_LENGTH={config.flows.flow_length}/HIDDEN_LAYERS={config.flows.hidden_layers}"
+    )
+    return total_file_path
+
+def edit_flow_nn(flow, network):
+    match type(flow):
+        case zuko.flows.continuous.CNF:
+            flow.transform.ode = network
+        case _:
+            # Handle default case
+            pass
+    return flow
+
+def posterior_eval(
+        data, 
+        spatial_locations,  
+        original_adata,
+        config,
+        spatial_cluster_probs_prior, 
+        true_prior_weights=None,
+        loading_trained_model=False
+    ):
+
+    cluster_probs_samples = []
+    batch_size = config.flows.batch_size
+
+    if loading_trained_model:
+        pyro.module("posterior_flow", cluster_probs_flow_dist, update_module_params=True)
+
+    rows = spatial_locations["row"].astype(int)
+    columns = spatial_locations["col"].astype(int)
+
+    num_rows = max(rows) + 1
+    num_cols = max(columns) + 1
+
+    cluster_grid = torch.zeros((num_rows, num_cols), dtype=torch.long)
+
+    with torch.no_grad():
+        current_power = 0
+        for sample_num in range(1, config.VI.num_posterior_samples + 1):
+            with pyro.plate("data", len(data)):
+                cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
+
+                # Make the logits numerically stable
+                max_logit = torch.max(cluster_logits, dim=-1, keepdim=True).values
+                stable_logits = cluster_logits - max_logit
+                cluster_probs_sample = pyro.sample(
+                    "cluster_probs",
+                    dist.Delta(torch.nn.functional.softmax(stable_logits, dim=-1)).to_event(1)
+                )
+            torch.cuda.empty_cache()
+            cluster_probs_samples.append(cluster_probs_sample)
+            del cluster_probs_sample  # Explicitly delete
+
+            if sample_num == config.VI.num_posterior_samples or sample_num == 10**current_power:
+
+                cluster_probs_avg = torch.stack(cluster_probs_samples).mean(dim=0)
+                cluster_assignments_posterior = cluster_probs_avg.argmax(dim=-1)
+
+                cluster_grid[rows, columns] = cluster_assignments_posterior + 1
+
+                colors = plt.cm.get_cmap('viridis', config.data.num_clusters + 1)
+
+                plt.figure(figsize=(6, 6))
+                plt.imshow(cluster_grid.cpu(), cmap=colors, interpolation='nearest', origin='lower')
+                plt.colorbar(ticks=range(1, config.data.num_clusters + 1), label='Cluster Values')
+                plt.title('Posterior Cluster Assignment with XenNF')
+
+                if not os.path.exists(xennf_clusters_filepath := save_filepath(config)):
+                    os.makedirs(xennf_clusters_filepath)
+                _ = plt.savefig(
+                    f"{xennf_clusters_filepath}/result_nsamples={sample_num}.png"
+                )
+
+                # no axis version save for writeup
+                plt.figure(figsize=(6, 6))
+                plt.imshow(cluster_grid.cpu(), cmap=colors, interpolation='nearest', origin='lower', extent=(0, num_cols, 0, num_rows), aspect='auto')
+                plt.axis('off')
+
+                if not os.path.exists(xennf_clusters_filepath := save_filepath(config)):
+                    os.makedirs(xennf_clusters_filepath)
+                _ = plt.savefig(
+                    f"{xennf_clusters_filepath}/simple_result_nsamples={sample_num}.png",
+                    bbox_inches='tight',
+                    pad_inches=0
+                )
+
+                if config.data.dataset == "SYNTHETIC":
+                    ari = ARI(cluster_assignments_posterior.cpu(), true_prior_weights.argmax(axis=-1))
+                    nmi = NMI(cluster_assignments_posterior.cpu(), true_prior_weights.argmax(axis=-1))
+                
+                elif config.data.dataset == "DLPFC":
+                    # Create a DataFrame for easier handling
+                    cluster_data = pd.DataFrame({
+                        'ClusterAssignments': cluster_assignments_posterior.cpu().numpy(),
+                        'Region': original_adata.xenium_spot_data.obs["Region"]
+                    })
+
+                    # Drop rows where 'Region' is NaN
+                    filtered_data = cluster_data.dropna(subset=['Region'])
+                    ari = ARI(filtered_data['ClusterAssignments'], filtered_data['Region'])
+                    nmi = NMI(filtered_data['ClusterAssignments'], filtered_data['Region'])
+
+                cluster_metrics = {
+                    "ARI": round(ari, 3),
+                    "NMI": round(nmi, 3)
+                }
+                with open(f"{xennf_clusters_filepath}/cluster_metrics_nsamples={sample_num}.json", 'w') as fp:
+                    json.dump(cluster_metrics, fp)
+
+                current_power += 1
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Train the normalizing flow or load existing parameters.")
+    parser.add_argument("-l", "--load_model", action="store_true", default=False, help="Load a pre-trained model.")
+    parser.add_argument("-n", "--config_name", default="0", help="The name of the config to use.")
+    args = parser.parse_args()
+
+    # cuda setup
+    if torch.cuda.is_available():
+        print("YAY! GPU available :3")
+        
+        # Get all available GPUs sorted by memory usage (lowest first)
+        available_gpus = GPUtil.getAvailable(order='memory', limit=1)
+        
+        if available_gpus:
+            selected_gpu = available_gpus[0]
+            
+            # Set the GPU with the lowest memory usage
+            torch.cuda.set_device(selected_gpu)
+            torch.set_default_tensor_type(torch.cuda.FloatTensor)
+            
+            print(f"Using GPU: {selected_gpu} with the lowest memory usage.")
+        else:
+            print("No GPUs available with low memory usage.")
+    else:
+        print("No GPU available :(")
+
+    # setup 
+    torch.set_printoptions(sci_mode=False)
+    expected_total_param_dim = 2 # K x D
+    warnings.filterwarnings("ignore")
+    config = OmegaConf.load(f'config/config_SYNTHETIC/config{args.config_name}.yaml')
+
+    (
+        data, 
+        spatial_locations, 
+        original_adata, 
+        spatial_cluster_probs_prior, 
+        empirical_prior_means, 
+        empirical_prior_scales, 
+        true_prior_weights, 
+        cluster_states
+    ) = prepare_data(config)
+
+    cluster_probs_graph_flow_dist = setup_zuko_flow(
+        flow_type=config.flows.prior_flow_type,
+        flow_length=config.flows.flow_length,
+        num_clusters=config.data.num_clusters,
+        context_length=config.data.data_dimension,
+        hidden_layers=(128, 128, 128)
+    )
+
+    # setup the data graph
+    positions = torch.tensor(spatial_locations.to_numpy()).float()
+    edge_index = pyg.nn.knn_graph(positions, k=1+4*config.data.neighborhood_size, loop=True)
+
+    input_x = torch.tensor(original_adata.xenium_spot_data.X, dtype=torch.float32)
+    graph = Data(x=data, edge_index=edge_index)
+
+    # create the gcn
+    gcn_network = GCNFlowModel(
+        original_graph=graph,
+        in_features=cluster_probs_graph_flow_dist.transform.ode[0].weight.shape[1],
+        num_clusters=config.data.num_clusters,
+        conv_type=config.flows.gconv_type,
+        neighborhood_size=config.data.neighborhood_size
+    )
+
+    # update the flow to use the gcn as the hypernet
+    cluster_probs_graph_flow_dist = edit_flow_nn(cluster_probs_graph_flow_dist, gcn_network)
+
+    # model, flow, and guide setup
+    def model(data):
+
+        pyro.module("prior_flow", cluster_probs_graph_flow_dist)
+        
+        with pyro.plate("clusters", config.data.num_clusters):
+
+            # Define the means and variances of the Gaussian components
+            cluster_means = pyro.sample("cluster_means", dist.Normal(empirical_prior_means, 10.0).to_event(1))
+            cluster_scales = pyro.sample("cluster_scales", dist.LogNormal(empirical_prior_scales, 10.0).to_event(1))
+
+        cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_graph_flow_dist(data)).to_event(1))
+        # print("MODEL ", cluster_logits.shape, data.shape)
+
+        # Define priors for the cluster assignment probabilities and Gaussian parameters
+        with pyro.plate("data", len(data), subsample_size=config.flows.batch_size) as ind:
+            batch_data = data[ind]
+            batch_logits = cluster_logits[..., ind, :]
+            # print("BATCH DATA: ", batch_data.shape)
+            # print("BATCH LOGITS: ", batch_logits.shape)
+            # likelihood for batch
+            if cluster_means.dim() == expected_total_param_dim:
+                pyro.sample(f"obs", dist.MixtureOfDiagNormals(
+                        cluster_means.unsqueeze(0).expand(config.flows.batch_size, -1, -1), 
+                        cluster_scales.unsqueeze(0).expand(config.flows.batch_size, -1, -1), 
+                        batch_logits.squeeze(1)
+                    ), 
+                    obs=batch_data
+                )
+            # likelihood for batch WITH vectorization of particles
+            else:
+                pyro.sample(f"obs", dist.MixtureOfDiagNormals(
+                        cluster_means.unsqueeze(1).expand(-1, config.flows.batch_size, -1, -1), 
+                        cluster_scales.unsqueeze(1).expand(-1, config.flows.batch_size, -1, -1), 
+                        batch_logits.squeeze(1)
+                    ), 
+                    obs=batch_data
+                )
+
+    cluster_probs_flow_dist = setup_zuko_flow(
+        flow_type=config.flows.posterior_flow_type,
+        flow_length=config.flows.flow_length,
+        num_clusters=config.data.num_clusters,
+        context_length=config.data.data_dimension,
+        hidden_layers=config.flows.hidden_layers
+    )
+ 
+    def guide(data):
+        
+        pyro.module("posterior_flow", cluster_probs_flow_dist)
+
+        with pyro.plate("clusters", config.data.num_clusters):
+            # Global variational parameters for cluster means and scales
+            cluster_means_q_mean = pyro.param("cluster_means_q_mean", empirical_prior_means + torch.randn_like(empirical_prior_means) * 0.05)
+            cluster_scales_q_mean = pyro.param("cluster_scales_q_mean", empirical_prior_scales + torch.randn_like(empirical_prior_scales) * 0.01, constraint=dist.constraints.positive)
+            if config.VI.learn_global_variances:
+                cluster_means_q_scale = pyro.param("cluster_means_q_scale", torch.ones_like(empirical_prior_means) * 1.0, constraint=dist.constraints.positive)
+                cluster_scales_q_scale = pyro.param("cluster_scales_q_scale", torch.ones_like(empirical_prior_scales) * 0.25, constraint=dist.constraints.positive)
+                cluster_means = pyro.sample("cluster_means", dist.Normal(cluster_means_q_mean, cluster_means_q_scale).to_event(1))
+                cluster_scales = pyro.sample("cluster_scales", dist.LogNormal(cluster_scales_q_mean, cluster_scales_q_scale).to_event(1))
+            else:
+                cluster_means = pyro.sample("cluster_means", dist.Delta(cluster_means_q_mean).to_event(1))
+                cluster_scales = pyro.sample("cluster_scales", dist.Delta(cluster_scales_q_mean).to_event(1))
+
+        cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
+        # print("GUIDE ", cluster_logits.shape)
+
+    model_save_path = os.path.join(
+        "/nfs/turbo/lsa-regier/scratch", 
+        "roko/nf_results",
+        save_filepath(config)
+    )
+
+    # Set CUDA launch blocking for better error reporting
+    os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+
+    if args.load_model:
+        print("Loading pre-trained model...")
+        try:
+            model_file = os.path.join(model_save_path, 'model.save')
+            # Ensure the model parameters are loaded to the current GPU
+            pyro.get_param_store().load(model_file, map_location=torch.device(f'cuda:{selected_gpu}'))
+        except FileNotFoundError:
+            raise FileNotFoundError("This model version doesn't have a saved version yet. You need to train it.")
+
+    else:
+        pyro.clear_param_store()
+        train(model, guide, data, config, true_prior_weights)
+        if not os.path.exists(model_save_path):
+            os.makedirs(model_save_path, exist_ok=True)
+        model_file = os.path.join(model_save_path, 'model.save')
+        pyro.get_param_store().save(model_file)
+
+    posterior_eval(data, spatial_locations, original_adata, config, cluster_states, true_prior_weights)
