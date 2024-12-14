@@ -94,7 +94,10 @@ def setup_zuko_flow(flow_type: str, num_clusters: int, flow_length: int = 1, con
                 features=num_clusters,
                 context=context_length,
                 hidden_features=hidden_layers,
-                activation=torch.nn.Tanh
+                activation=torch.nn.Tanh,
+                atol=1e-4,
+                rtol=1e-4,
+                exact=False,
             )
         case "GF":
             cluster_probs_flow_dist = zuko.flows.GF(

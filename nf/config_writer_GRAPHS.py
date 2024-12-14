@@ -8,12 +8,13 @@ flow_length_by_type = {
     "MAF": [2, 8, 32],
     "NSF": [2, 8, 32]
 }
-init_method = ["mclust", "Leiden", "Louvain", "K-Means"]
+init_method = ["Louvain"]
 hidden_layers = [
     [128, 128, 128],
     [512, 512, 512]
 ]
 neighborhood_size = [1,2]
+graph_conv = ["SGCN", "GCN", "SAGE"]
 
 DATASET = "SYNTHETIC"
 config_filepath = f"config/config_{DATASET}"
@@ -28,12 +29,13 @@ for ft in flow_type:
         flow_length_by_type[ft],
         init_method,
         hidden_layers,
-        neighborhood_size
+        neighborhood_size,
+        graph_conv,
     )))
 
 for i, combo in enumerate(all_combinations):
 
-    flow_type, flow_length, init_method, hidden_layers, neighborhood_size = combo
+    flow_type, flow_length, init_method, hidden_layers, neighborhood_size, graph_conv = combo
 
     config_yaml = f"""
     data:
@@ -53,7 +55,7 @@ for i, combo in enumerate(all_combinations):
         num_posterior_samples: 2500
         num_particles: 25
     flows:
-        gconv_type: SGCN
+        gconv_type: {graph_conv}
         prior_flow_type: CNF
         posterior_flow_type: {flow_type}
         flow_length: {flow_length}

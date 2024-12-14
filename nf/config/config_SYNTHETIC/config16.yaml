@@ -8,16 +8,16 @@ VI:
 data:
   data_dimension: 5
   dataset: SYNTHETIC
-  init_method: mclust
+  init_method: Louvain
   neighborhood_agg: mean
-  neighborhood_size: 1
+  neighborhood_size: 2
   num_clusters: 7
   num_pcs: 3
-  resolution: 0.47
+  resolution: 0.65
 flows:
   batch_size: 512
   flow_length: 2
-  gconv_type: SGCN
+  gconv_type: GCN
   hidden_layers:
   - 128
   - 128

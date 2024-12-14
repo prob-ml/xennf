@@ -17,7 +17,7 @@ data:
 flows:
   batch_size: 512
   flow_length: 32
-  gconv_type: SGCN
+  gconv_type: SAGE
   hidden_layers:
   - 512
   - 512

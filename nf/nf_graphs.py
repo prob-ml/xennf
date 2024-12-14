@@ -311,6 +311,9 @@ def train(
         if patience_counter >= config.flows.patience:
             break
 
+        print(f"Memory allocated: {torch.cuda.memory_allocated() / 1e9} GB")
+        print(f"Memory reserved: {torch.cuda.memory_reserved() / 1e9} GB")
+
 def save_filepath(config):
     total_file_path = (
         f"results/{config.data.dataset}/XenNF/DATA_DIM={config.data.data_dimension}/"
@@ -356,8 +359,8 @@ def posterior_eval(
     with torch.no_grad():
         current_power = 0
         for sample_num in range(1, config.VI.num_posterior_samples + 1):
+            cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
             with pyro.plate("data", len(data)):
-                cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
 
                 # Make the logits numerically stable
                 max_logit = torch.max(cluster_logits, dim=-1, keepdim=True).values
@@ -374,6 +377,8 @@ def posterior_eval(
 
                 cluster_probs_avg = torch.stack(cluster_probs_samples).mean(dim=0)
                 cluster_assignments_posterior = cluster_probs_avg.argmax(dim=-1)
+
+                print(cluster_grid.shape, cluster_assignments_posterior.shape)
 
                 cluster_grid[rows, columns] = cluster_assignments_posterior + 1
 
