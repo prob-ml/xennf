@@ -95,7 +95,7 @@ def setup_zuko_flow(flow_type: str, num_clusters: int, flow_length: int = 1, con
                 context=context_length,
                 hidden_features=hidden_layers,
                 activation=torch.nn.Tanh,
-                atol=1e-4,
+                atol=1e-5,
                 rtol=1e-4,
                 exact=False,
             )

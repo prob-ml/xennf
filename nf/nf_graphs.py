@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from torch import Size, Tensor
 import pyro
+import copy
 from pyro.infer import SVI, Trace_ELBO, TraceMeanField_ELBO
 from pyro.optim import Adam, PyroOptim
 
@@ -40,28 +41,27 @@ from zuko_flow import setup_zuko_flow, ZukoToPyro
 from omegaconf import OmegaConf
 
 class GCNFlowModel(nn.Module):
-    def __init__(self, original_graph, in_features, num_clusters, conv_type="GCN", neighborhood_size=1):
+    def __init__(self, original_graph, in_features, out_features, conv_type="GCN"):
         super().__init__()
         self.x = original_graph.x
         self.edge_index = original_graph.edge_index
-        self.neighborhood_size = neighborhood_size
-        self.set_layers(in_features, num_clusters, conv_type)
+        self.set_layers(in_features, out_features, conv_type)
 
-    def set_layers(self, in_features, num_clusters, conv_type):
+    def set_layers(self, in_features, out_features, conv_type):
         match conv_type:
             case "GCN":
                 self.layers = nn.ModuleList([
-                    GCNModule(in_features, 64, self.neighborhood_size, conv_type),
+                    GCNModule(in_features, 64, conv_type),
                     nn.ReLU(),
-                    GCNModule(64, 64, self.neighborhood_size, conv_type),
+                    GCNModule(64, 64, conv_type),
                     nn.ReLU(),
-                    GCNModule(64, 64, self.neighborhood_size, conv_type),
+                    GCNModule(64, 64, conv_type),
                     nn.ReLU(),
-                    GCNModule(64, num_clusters, self.neighborhood_size, conv_type)
+                    GCNModule(64, out_features, conv_type)
                 ])
             case "SGCN":
                 self.layers =  nn.ModuleList([
-                    GCNModule(in_features, num_clusters, conv_type),
+                    GCNModule(in_features, out_features, conv_type),
                 ])
             case "SAGE" | "cuSAGE":
                 self.layers = nn.ModuleList([
@@ -71,7 +71,7 @@ class GCNFlowModel(nn.Module):
                     nn.ReLU(),
                     GCNModule(64, 64, conv_type),
                     nn.ReLU(),
-                    GCNModule(64, num_clusters, conv_type)
+                    GCNModule(64, out_features, conv_type)
                 ])
             case _:
                 raise NotImplementedError(f"{conv_type} not supported yet.")
@@ -314,19 +314,39 @@ def train(
         print(f"Memory allocated: {torch.cuda.memory_allocated() / 1e9} GB")
         print(f"Memory reserved: {torch.cuda.memory_reserved() / 1e9} GB")
 
+        torch.cuda.empty_cache()
+
 def save_filepath(config):
     total_file_path = (
         f"results/{config.data.dataset}/XenNF/DATA_DIM={config.data.data_dimension}/"
         f"K={config.data.num_clusters}/INIT={config.data.init_method}/NEIGHBORSIZE={config.data.neighborhood_size}/"
-        f"PRIOR_FLOW_TYPE={config.flows.prior_flow_type}/"
+        f"PRIOR_FLOW_TYPE={config.flows.prior_flow_type}/GCONV={config.flows.gconv_type}/"
         f"POST_FLOW_TYPE={config.flows.posterior_flow_type}/FLOW_LENGTH={config.flows.flow_length}/HIDDEN_LAYERS={config.flows.hidden_layers}"
     )
     return total_file_path
 
-def edit_flow_nn(flow, network):
+def edit_flow_nn(config, flow, graph, graph_conv="GCN"):
     match type(flow):
         case zuko.flows.continuous.CNF:
+            network = GCNFlowModel(
+                original_graph=graph,
+                in_features=flow.transform.ode[0].weight.shape[1],
+                out_features=config.data.num_clusters,
+                conv_type=graph_conv,
+            )
             flow.transform.ode = network
+        case zuko.flows.autoregressive.MAF:
+            network = GCNFlowModel(
+                original_graph=graph,
+                in_features=config.data.data_dimension+config.data.num_clusters,
+                out_features=config.data.num_clusters*2,
+                conv_type=graph_conv,
+            )
+
+            flow.transform.transforms.insert(0, copy.deepcopy(flow.transform.transforms[0]))
+            flow.transform.transforms[0].hyper = network
+        case zuko.flow.spline.NSF:
+            pass
         case _:
             # Handle default case
             pass
@@ -494,17 +514,8 @@ if __name__ == "__main__":
     input_x = torch.tensor(original_adata.xenium_spot_data.X, dtype=torch.float32)
     graph = Data(x=data, edge_index=edge_index)
 
-    # create the gcn
-    gcn_network = GCNFlowModel(
-        original_graph=graph,
-        in_features=cluster_probs_graph_flow_dist.transform.ode[0].weight.shape[1],
-        num_clusters=config.data.num_clusters,
-        conv_type=config.flows.gconv_type,
-        neighborhood_size=config.data.neighborhood_size
-    )
-
     # update the flow to use the gcn as the hypernet
-    cluster_probs_graph_flow_dist = edit_flow_nn(cluster_probs_graph_flow_dist, gcn_network)
+    cluster_probs_graph_flow_dist = edit_flow_nn(config, cluster_probs_graph_flow_dist, graph, config.flows.gconv_type)
 
     # model, flow, and guide setup
     def model(data):

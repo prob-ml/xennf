@@ -3,10 +3,11 @@ import os
 import subprocess
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "4,5,6"
+NUM_GPUS = len(os.environ["CUDA_VISIBLE_DEVICES"].split(','))
 
 def format_command(name):
     return (
-        f"python nf_potts.py "
+        f"python nf_graphs.py "
         f"--config_name={name}"
     )
 
@@ -15,7 +16,7 @@ config_list = [x.replace('config', '').replace('.yaml', '') for x in os.listdir(
 commands = [format_command(i) for i in range(len(config_list))]
 
 # Split commands into 3 groups for the 3 GPUs
-gpu_batches = [commands[i::3] for i in range(3)]
+gpu_batches = [commands[i::NUM_GPUS] for i in range(NUM_GPUS)]
 
 # Create a directory to store the shell scripts
 os.makedirs('scripts', exist_ok=True)
