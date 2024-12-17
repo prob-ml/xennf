@@ -2,7 +2,7 @@ VI:
   empirical_prior: true
   learn_global_variances: false
   min_concentration: 0.001
-  num_particles: 25
+  num_particles: 3
   num_posterior_samples: 2500
   num_prior_samples: 1000
 data:
@@ -24,6 +24,6 @@ flows:
   - 512
   lr: 0.001
   num_epochs: 1000
-  patience: 25
+  patience: 50
   posterior_flow_type: NSF
   prior_flow_type: CNF

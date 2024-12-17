@@ -2,8 +2,7 @@ import itertools
 import os
 import subprocess
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "4,5,6"
-NUM_GPUS = len(os.environ["CUDA_VISIBLE_DEVICES"].split(','))
+NUM_GPUS = 3
 
 def format_command(name):
     return (
@@ -28,8 +27,6 @@ for gpu_id, batch in enumerate(gpu_batches):
     # Write commands to the shell script
     with open(script_name, 'w') as f:
         f.write('#!/bin/bash\n')
-        # Set specific GPU for this batch
-        f.write(f'export CUDA_VISIBLE_DEVICES={gpu_id+4}\n\n')
         # Run commands sequentially
         for cmd in batch:
             f.write(f'{cmd}\n')

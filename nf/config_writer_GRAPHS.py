@@ -53,7 +53,7 @@ for i, combo in enumerate(all_combinations):
         min_concentration: 0.001
         num_prior_samples: 1000
         num_posterior_samples: 2500
-        num_particles: 25
+        num_particles: 3
     flows:
         gconv_type: {graph_conv}
         prior_flow_type: CNF
@@ -62,7 +62,7 @@ for i, combo in enumerate(all_combinations):
         hidden_layers: {hidden_layers}
         num_epochs: 1000
         batch_size: 512
-        patience: 25
+        patience: 50
         lr: 0.001
     """
 

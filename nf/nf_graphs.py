@@ -338,7 +338,7 @@ def edit_flow_nn(config, flow, graph, graph_conv="GCN"):
         case zuko.flows.autoregressive.MAF:
             network = GCNFlowModel(
                 original_graph=graph,
-                in_features=config.data.data_dimension+config.data.num_clusters,
+                in_features=config.data.num_clusters,
                 out_features=config.data.num_clusters*2,
                 conv_type=graph_conv,
             )
@@ -380,15 +380,11 @@ def posterior_eval(
         current_power = 0
         for sample_num in range(1, config.VI.num_posterior_samples + 1):
             cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
-            with pyro.plate("data", len(data)):
 
-                # Make the logits numerically stable
-                max_logit = torch.max(cluster_logits, dim=-1, keepdim=True).values
-                stable_logits = cluster_logits - max_logit
-                cluster_probs_sample = pyro.sample(
-                    "cluster_probs",
-                    dist.Delta(torch.nn.functional.softmax(stable_logits, dim=-1)).to_event(1)
-                )
+            # Make the logits numerically stable
+            max_logit = torch.max(cluster_logits, dim=-1, keepdim=True).values
+            stable_logits = cluster_logits - max_logit
+            cluster_probs_sample = torch.nn.functional.softmax(stable_logits, dim=-1)
             torch.cuda.empty_cache()
             cluster_probs_samples.append(cluster_probs_sample)
             del cluster_probs_sample  # Explicitly delete
@@ -503,7 +499,7 @@ if __name__ == "__main__":
         flow_type=config.flows.prior_flow_type,
         flow_length=config.flows.flow_length,
         num_clusters=config.data.num_clusters,
-        context_length=config.data.data_dimension,
+        context_length=0,
         hidden_layers=(128, 128, 128)
     )
 
@@ -517,7 +513,6 @@ if __name__ == "__main__":
     # update the flow to use the gcn as the hypernet
     cluster_probs_graph_flow_dist = edit_flow_nn(config, cluster_probs_graph_flow_dist, graph, config.flows.gconv_type)
 
-    # model, flow, and guide setup
     def model(data):
 
         pyro.module("prior_flow", cluster_probs_graph_flow_dist)
@@ -528,7 +523,7 @@ if __name__ == "__main__":
             cluster_means = pyro.sample("cluster_means", dist.Normal(empirical_prior_means, 10.0).to_event(1))
             cluster_scales = pyro.sample("cluster_scales", dist.LogNormal(empirical_prior_scales, 10.0).to_event(1))
 
-        cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_graph_flow_dist(data)).to_event(1))
+        cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_graph_flow_dist()).expand([len(data)]).to_event(1))
         # print("MODEL ", cluster_logits.shape, data.shape)
 
         # Define priors for the cluster assignment probabilities and Gaussian parameters

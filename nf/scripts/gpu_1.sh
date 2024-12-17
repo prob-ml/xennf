@@ -1,6 +1,4 @@
 #!/bin/bash
-export CUDA_VISIBLE_DEVICES=5
-
 python nf_graphs.py --config_name=1
 python nf_graphs.py --config_name=4
 python nf_graphs.py --config_name=7
