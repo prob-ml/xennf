@@ -19,9 +19,9 @@ flows:
   flow_length: 2
   gconv_type: GCN
   hidden_layers:
-  - 128
-  - 128
-  - 128
+  - 512
+  - 512
+  - 512
   lr: 0.001
   num_epochs: 1000
   patience: 50

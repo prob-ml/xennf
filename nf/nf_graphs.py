@@ -51,13 +51,13 @@ class GCNFlowModel(nn.Module):
         match conv_type:
             case "GCN":
                 self.layers = nn.ModuleList([
-                    GCNModule(in_features, 64, conv_type),
+                    GCNModule(in_features, 512, conv_type),
                     nn.ReLU(),
-                    GCNModule(64, 64, conv_type),
+                    GCNModule(512, 512, conv_type),
                     nn.ReLU(),
-                    GCNModule(64, 64, conv_type),
+                    GCNModule(512, 512, conv_type),
                     nn.ReLU(),
-                    GCNModule(64, out_features, conv_type)
+                    GCNModule(512, out_features, conv_type)
                 ])
             case "SGCN":
                 self.layers =  nn.ModuleList([
@@ -65,13 +65,13 @@ class GCNFlowModel(nn.Module):
                 ])
             case "SAGE" | "cuSAGE":
                 self.layers = nn.ModuleList([
-                    GCNModule(in_features, 64, conv_type),
+                    GCNModule(in_features, 512, conv_type),
                     nn.ReLU(),
-                    GCNModule(64, 64, conv_type),
+                    GCNModule(512, 512, conv_type),
                     nn.ReLU(),
-                    GCNModule(64, 64, conv_type),
+                    GCNModule(512, 512, conv_type),
                     nn.ReLU(),
-                    GCNModule(64, out_features, conv_type)
+                    GCNModule(512, out_features, conv_type)
                 ])
             case _:
                 raise NotImplementedError(f"{conv_type} not supported yet.")
@@ -92,7 +92,7 @@ class GCNModule(nn.Module):
             case "GCN":
                 self.conv = GCNConv(in_channels, out_channels)
             case "SGCN":
-                self.conv = SGConv(in_channels, out_channels, K=neighborhood_size)
+                self.conv = SGConv(in_channels, out_channels, K=neighborhood_size*3)
             case "SAGE":
                 self.conv = SAGEConv(in_channels, out_channels)
             case "cuSAGE":
@@ -317,11 +317,17 @@ def train(
         torch.cuda.empty_cache()
 
 def save_filepath(config):
-    total_file_path = (
-        f"results/{config.data.dataset}/XenNF/DATA_DIM={config.data.data_dimension}/"
-        f"K={config.data.num_clusters}/INIT={config.data.init_method}/NEIGHBORSIZE={config.data.neighborhood_size}/"
-        f"PRIOR_FLOW_TYPE={config.flows.prior_flow_type}/GCONV={config.flows.gconv_type}/"
-        f"POST_FLOW_TYPE={config.flows.posterior_flow_type}/FLOW_LENGTH={config.flows.flow_length}/HIDDEN_LAYERS={config.flows.hidden_layers}"
+    total_file_path = os.path.join(
+        "results", config.data.dataset, "XenNF", 
+        f"DATA_DIM={config.data.data_dimension}", 
+        f"K={config.data.num_clusters}", 
+        f"INIT={config.data.init_method}", 
+        f"NEIGHBORSIZE={config.data.neighborhood_size}", 
+        f"PRIOR_FLOW_TYPE={config.flows.prior_flow_type}", 
+        f"GCONV={config.flows.gconv_type}", 
+        f"POST_FLOW_TYPE={config.flows.posterior_flow_type}", 
+        f"FLOW_LENGTH={config.flows.flow_length}" if config.flows.posterior_flow_type != 'CNF' else '', 
+        f"HIDDEN_LAYERS={config.flows.hidden_layers}"
     )
     return total_file_path
 

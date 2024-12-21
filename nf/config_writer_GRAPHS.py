@@ -5,13 +5,13 @@ import os
 flow_type = ["CNF", "MAF", "NSF"]
 flow_length_by_type = {
     "CNF": [32],  # CNF only needs one "flow length" since it doesn't use one
-    "MAF": [2, 8, 32],
-    "NSF": [2, 8, 32]
+    "MAF": [2, 4, 8],
+    "NSF": [2, 4, 8]
 }
 init_method = ["Louvain"]
 hidden_layers = [
-    [128, 128, 128],
-    [512, 512, 512]
+    [512, 512, 512],
+    [512, 512, 512, 512]
 ]
 neighborhood_size = [1,2]
 graph_conv = ["SGCN", "GCN", "SAGE"]
