@@ -156,9 +156,19 @@ class XeniumCluster:
 
         for resolution in resolutions:
             key_added = f'leiden_{resolution}'
+            
+            if self.dataset_name == "DLPFC":
 
-            # Running the clustering algorithm
-            sc.tl.leiden(data, resolution=resolution, key_added=key_added)
+                non_na_mask = ~data.obs["Region"].isna()
+
+                masked_data_clusters = sc.tl.leiden(data[non_na_mask], resolution=resolution, key_added=key_added, copy=True)
+
+                data.obs[f'leiden_{resolution}'] = np.zeros_like(data.obs.index, dtype=int) - 1  # Initialize with -1 for non-NA regions
+                data.obs.loc[non_na_mask, f'leiden_{resolution}'] = masked_data_clusters.obs[f'leiden_{resolution}']
+
+            else:
+
+                sc.tl.leiden(data, resolution=resolution, key_added=key_added)
 
             # # Calculate and plot embedding
             # get_embedding(data, embedding, **kwargs)
@@ -184,14 +194,47 @@ class XeniumCluster:
 
             if self.dataset_name == "SYNTHETIC":
                 colormap = plt.cm.get_cmap('viridis', num_clusters)
+            elif self.dataset_name == "DLPFC":
+                colors = plt.cm.get_cmap('viridis', num_clusters)
+                grey_color = [0.5, 0.5, 0.5, 1]  # Medium gray for unused cluster
+                colormap_colors = np.vstack((grey_color, colors(np.linspace(0, 1, num_clusters-1))))
+                colormap = ListedColormap(colormap_colors)
             else:
                 colors = plt.cm.get_cmap('viridis', num_clusters + 1)
                 colormap_colors = np.vstack(([[1, 1, 1, 1]], colors(np.linspace(0, 1, num_clusters))))
                 colormap = ListedColormap(colormap_colors)
 
             plt.figure(figsize=(6, 6))
-            plt.imshow(cluster_grid.cpu(), cmap=colormap, interpolation='nearest', origin='lower')
-            plt.colorbar(ticks=range(num_clusters + 1), label='Cluster Values')
+            if self.dataset_name == "DLPFC":
+
+                rows, cols, clusters = rows.cpu(), cols.cpu(), clusters.cpu()
+
+                # Create mapping between region names and integer codes
+                region_to_int = {name: code + 1 for code, name in enumerate(data.obs["Region"].cat.categories)}
+                int_to_region = {code + 1: name for code, name in enumerate(data.obs["Region"].cat.categories)}
+
+                # Scatter plot
+                plt.scatter(cols, rows, c=clusters+1, cmap=colormap, marker='h', s=12)#, edgecolors='white')
+
+                # Calculate padding for the axis limits
+                x_padding = (cols.max() - cols.min()) * 0.02  # 2% padding
+                y_padding = (rows.max() - rows.min()) * 0.02        # 2% padding
+
+                # Set axis limits with padding
+                plt.xlim(cols.min() - x_padding, cols.max() + x_padding)
+                plt.ylim(rows.min() - y_padding, rows.max() + y_padding)
+
+                # Force square appearance by stretching the y-axis
+                plt.gca().set_aspect((cols.max() - cols.min() + 2 * x_padding) / 
+                                    (rows.max() - rows.min() + 2 * y_padding))  # Adjust for padded ranges
+                plt.gca().invert_yaxis()  # Maintain spatial orientation
+                # Add colorbar and title
+                plt.colorbar(ticks=range(num_clusters), label="True Label").set_ticklabels(["NA"] + list(int_to_region.values()))
+                plt.tight_layout()  # Minimize padding around the plot
+            else:
+
+                plt.imshow(cluster_grid.cpu(), cmap=colormap, interpolation='nearest', origin='lower')
+                plt.colorbar(ticks=range(num_clusters + 1), label='Cluster Values')
             plt.title(f'Cluster Assignment with Leiden ($\gamma$ = {resolution})')
 
             plt.savefig(
@@ -212,7 +255,19 @@ class XeniumCluster:
 
             key_added = f'louvain_{resolution}'
 
-            sc.tl.louvain(data, resolution=resolution, key_added=key_added)
+            if self.dataset_name == "DLPFC":
+
+                non_na_mask = ~data.obs["Region"].isna()
+
+                masked_data_clusters = sc.tl.louvain(data[non_na_mask], resolution=resolution, key_added=key_added, copy=True)
+
+                data.obs[f'louvain_{resolution}'] = np.zeros_like(data.obs.index, dtype=int) - 1  # Initialize with -1 for non-NA regions
+                data.obs.loc[non_na_mask, f'louvain_{resolution}'] = masked_data_clusters.obs[f'louvain_{resolution}']
+                print(data.obs[f'louvain_{resolution}'].unique())
+                print(resolution)
+            else:
+
+                sc.tl.louvain(data, resolution=resolution, key_added=key_added)
 
             # # calculate embedding
             # get_embedding(data, embedding, **kwargs)
@@ -239,14 +294,47 @@ class XeniumCluster:
 
             if self.dataset_name == "SYNTHETIC":
                 colormap = plt.cm.get_cmap('viridis', num_clusters)
+            elif self.dataset_name == "DLPFC":
+                colors = plt.cm.get_cmap('viridis', num_clusters)
+                grey_color = [0.5, 0.5, 0.5, 1]  # Medium gray for unused cluster
+                colormap_colors = np.vstack((grey_color, colors(np.linspace(0, 1, num_clusters-1))))
+                colormap = ListedColormap(colormap_colors)
             else:
                 colors = plt.cm.get_cmap('viridis', num_clusters + 1)
                 colormap_colors = np.vstack(([[1, 1, 1, 1]], colors(np.linspace(0, 1, num_clusters))))
                 colormap = ListedColormap(colormap_colors)
 
             plt.figure(figsize=(6, 6))
-            plt.imshow(cluster_grid.cpu(), cmap=colormap, interpolation='nearest', origin='lower')
-            plt.colorbar(ticks=range(num_clusters + 1), label='Cluster Values')
+            if self.dataset_name == "DLPFC":
+
+                rows, cols, clusters = rows.cpu(), cols.cpu(), clusters.cpu()
+
+                # Create mapping between region names and integer codes
+                region_to_int = {name: code + 1 for code, name in enumerate(data.obs["Region"].cat.categories)}
+                int_to_region = {code + 1: name for code, name in enumerate(data.obs["Region"].cat.categories)}
+
+                # Scatter plot
+                plt.scatter(cols, rows, c=clusters+1, cmap=colormap, marker='h', s=12)#, edgecolors='white')
+
+                # Calculate padding for the axis limits
+                x_padding = (cols.max() - cols.min()) * 0.02  # 2% padding
+                y_padding = (rows.max() - rows.min()) * 0.02        # 2% padding
+
+                # Set axis limits with padding
+                plt.xlim(cols.min() - x_padding, cols.max() + x_padding)
+                plt.ylim(rows.min() - y_padding, rows.max() + y_padding)
+
+                # Force square appearance by stretching the y-axis
+                plt.gca().set_aspect((cols.max() - cols.min() + 2 * x_padding) / 
+                                    (rows.max() - rows.min() + 2 * y_padding))  # Adjust for padded ranges
+                plt.gca().invert_yaxis()  # Maintain spatial orientation
+                # Add colorbar and title
+                plt.colorbar(ticks=range(num_clusters), label="True Label").set_ticklabels(["NA"] + list(int_to_region.values()))
+                plt.tight_layout()  # Minimize padding around the plot
+            else:
+
+                plt.imshow(cluster_grid.cpu(), cmap=colormap, interpolation='nearest', origin='lower')
+                plt.colorbar(ticks=range(num_clusters + 1), label='Cluster Values')
             plt.title(f'Cluster Assignment with Louvain ($\gamma$ = {resolution})')
 
             plt.savefig(
@@ -380,11 +468,24 @@ class XeniumCluster:
 
                 spatial_init_data = StandardScaler().fit_transform(spatial_init_data)
 
-            kmeans = KMeans(n_clusters=K).fit(spatial_init_data)
+            if self.dataset_name == "DLPFC":
 
-            cluster_assignments = kmeans.predict(spatial_init_data)
+                non_na_mask = ~data.obs["Region"].isna()
 
-            data.obs["cluster"] = cluster_assignments
+                kmeans = KMeans(n_clusters=K).fit(spatial_init_data[non_na_mask])
+
+                cluster_assignments = kmeans.predict(spatial_init_data[non_na_mask])
+
+                data.obs["cluster"] = np.zeros_like(data.obs.index, dtype=int) - 1  # Initialize with -1 for non-NA regions
+                data.obs.loc[non_na_mask, "cluster"] = cluster_assignments
+
+            else:
+
+                kmeans = KMeans(n_clusters=K).fit(spatial_init_data)
+
+                cluster_assignments = kmeans.predict(spatial_init_data)
+
+                data.obs["cluster"] = cluster_assignments
 
             self.target_dir_setter("K-Means", K=K)
             os.makedirs(self.target_dir, exist_ok=True)
@@ -404,14 +505,48 @@ class XeniumCluster:
 
             if self.dataset_name == "SYNTHETIC":
                 colormap = plt.cm.get_cmap('viridis', num_clusters)
+            elif self.dataset_name == "DLPFC":
+                colors = plt.cm.get_cmap('viridis', num_clusters)
+                grey_color = [0.5, 0.5, 0.5, 1]  # Medium gray for unused cluster
+                colormap_colors = np.vstack((grey_color, colors(np.linspace(0, 1, num_clusters-1))))
+                colormap = ListedColormap(colormap_colors)
             else:
                 colors = plt.cm.get_cmap('viridis', num_clusters + 1)
                 colormap_colors = np.vstack(([[1, 1, 1, 1]], colors(np.linspace(0, 1, num_clusters))))
                 colormap = ListedColormap(colormap_colors)
 
+
             plt.figure(figsize=(6, 6))
-            plt.imshow(cluster_grid.cpu(), cmap=colormap, interpolation='nearest', origin='lower')
-            plt.colorbar(ticks=range(num_clusters + 1), label='Cluster Values')
+            if self.dataset_name == "DLPFC":
+
+                rows, cols, clusters = rows.cpu(), cols.cpu(), clusters.cpu()
+
+                # Create mapping between region names and integer codes
+                region_to_int = {name: code + 1 for code, name in enumerate(data.obs["Region"].cat.categories)}
+                int_to_region = {code + 1: name for code, name in enumerate(data.obs["Region"].cat.categories)}
+
+                # Scatter plot
+                plt.scatter(cols, rows, c=clusters+1, cmap=colormap, marker='h', s=12)#, edgecolors='white')
+
+                # Calculate padding for the axis limits
+                x_padding = (cols.max() - cols.min()) * 0.02  # 2% padding
+                y_padding = (rows.max() - rows.min()) * 0.02        # 2% padding
+
+                # Set axis limits with padding
+                plt.xlim(cols.min() - x_padding, cols.max() + x_padding)
+                plt.ylim(rows.min() - y_padding, rows.max() + y_padding)
+
+                # Force square appearance by stretching the y-axis
+                plt.gca().set_aspect((cols.max() - cols.min() + 2 * x_padding) / 
+                                    (rows.max() - rows.min() + 2 * y_padding))  # Adjust for padded ranges
+                plt.gca().invert_yaxis()  # Maintain spatial orientation
+                # Add colorbar and title
+                plt.colorbar(ticks=range(num_clusters), label="True Label").set_ticklabels(["NA"] + list(int_to_region.values()))
+                plt.tight_layout()  # Minimize padding around the plot
+            else:
+
+                plt.imshow(cluster_grid.cpu(), cmap=colormap, interpolation='nearest', origin='lower')
+                plt.colorbar(ticks=range(num_clusters + 1), label='Cluster Values')
             plt.title(f'Cluster Assignment with K-Means')
 
             plt.savefig(

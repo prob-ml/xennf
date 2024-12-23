@@ -29,6 +29,7 @@ from tqdm import tqdm
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap
 import warnings
 import os
 import json
@@ -167,7 +168,6 @@ def prepare_data(config):
             "ARI": round(ari, 3),
             "NMI": round(nmi, 3)
         }
-        print(f"{config.data.init_method} Metrics: ", cluster_metrics)
 
         with open(f"{original_adata.target_dir}/cluster_metrics.json", 'w') as fp:
             json.dump(cluster_metrics, fp)
@@ -188,14 +188,12 @@ def prepare_data(config):
             "ARI": round(ari, 3),
             "NMI": round(nmi, 3)
         }
-        print(f"{config.data.init_method} Metrics: ", cluster_metrics)
 
         with open(f"{original_adata.target_dir}/cluster_metrics.json", 'w') as fp:
             json.dump(cluster_metrics, fp)
 
     empirical_prior_means = torch.zeros(config.data.num_clusters, gene_data.shape[1])
     empirical_prior_scales = torch.ones(config.data.num_clusters, gene_data.shape[1])
-    print(np.unique(initial_clusters))
     if config.VI.empirical_prior:
         for i in range(config.data.num_clusters):
             cluster_data = gene_data[initial_clusters == i]
@@ -258,13 +256,6 @@ def prepare_data(config):
 
         cluster_grid_PRIOR[rows, columns] = cluster_assignments_prior + 1
 
-        colors = plt.cm.get_cmap('viridis', config.data.num_clusters)
-
-        plt.figure(figsize=(6, 6))
-        plt.imshow(cluster_grid_PRIOR.cpu(), cmap=colors, interpolation='nearest', origin='lower')
-        plt.colorbar(ticks=range(1, config.data.num_clusters + 1), label='Cluster Values')
-        plt.title('Prior Cluster Assignment with XenNF')
-
     return data, spatial_locations, original_adata, spatial_cluster_probs_prior, empirical_prior_means, empirical_prior_scales, TRUE_PRIOR_WEIGHTS, cluster_grid_PRIOR
 
 def train(
@@ -310,9 +301,6 @@ def train(
             patience_counter = 0
         if patience_counter >= config.flows.patience:
             break
-
-        print(f"Memory allocated: {torch.cuda.memory_allocated() / 1e9} GB")
-        print(f"Memory reserved: {torch.cuda.memory_reserved() / 1e9} GB")
 
         torch.cuda.empty_cache()
 
@@ -400,15 +388,56 @@ def posterior_eval(
                 cluster_probs_avg = torch.stack(cluster_probs_samples).mean(dim=0)
                 cluster_assignments_posterior = cluster_probs_avg.argmax(dim=-1)
 
-                print(cluster_grid.shape, cluster_assignments_posterior.shape)
+                if config.data.dataset == "DLPFC":
+                    original_adata.xenium_spot_data.obs["cluster"] = -1
+                    original_adata.xenium_spot_data.obs.loc[~original_adata.xenium_spot_data.obs["Region"].isna(), "cluster"] = cluster_assignments_posterior.cpu().numpy()
+                    cluster_assignments_posterior = torch.tensor(original_adata.xenium_spot_data.obs["cluster"])
 
                 cluster_grid[rows, columns] = cluster_assignments_posterior + 1
+
+                if config.data.dataset == "SYNTHETIC":
+                    colormap = plt.cm.get_cmap('viridis', config.data.num_clusters + 1)
+                elif config.data.dataset == "DLPFC":
+                    colors = plt.cm.get_cmap('viridis', config.data.num_clusters)
+                    grey_color = [0.5, 0.5, 0.5, 1]  # Medium gray for unused cluster
+                    colormap_colors = np.vstack((grey_color, colors(np.linspace(0, 1, config.data.num_clusters-1))))
+                    colormap = ListedColormap(colormap_colors)
+                else:
+                    colors = plt.cm.get_cmap('viridis', config.data.num_clusters + 1)
+                    colormap_colors = np.vstack(([[1, 1, 1, 1]], colors(np.linspace(0, 1, config.data.num_clusters))))
+                    colormap = ListedColormap(colormap_colors)
 
                 colors = plt.cm.get_cmap('viridis', config.data.num_clusters + 1)
 
                 plt.figure(figsize=(6, 6))
-                plt.imshow(cluster_grid.cpu(), cmap=colors, interpolation='nearest', origin='lower')
-                plt.colorbar(ticks=range(1, config.data.num_clusters + 1), label='Cluster Values')
+                if config.data.dataset == "DLPFC":
+
+                    # Create mapping between region names and integer codes
+                    region_to_int = {name: code + 1 for code, name in enumerate(original_adata.xenium_spot_data.obs["Region"].cat.categories)}
+                    int_to_region = {code + 1: name for code, name in enumerate(original_adata.xenium_spot_data.obs["Region"].cat.categories)}
+
+                    # Scatter plot
+                    plt.scatter(columns, rows, c=cluster_assignments_posterior.cpu()+1, cmap=colormap, marker='h', s=12)#, edgecolors='white')
+
+                    # Calculate padding for the axis limits
+                    x_padding = (columns.max() - columns.min()) * 0.02  # 2% padding
+                    y_padding = (rows.max() - rows.min()) * 0.02        # 2% padding
+
+                    # Set axis limits with padding
+                    plt.xlim(columns.min() - x_padding, columns.max() + x_padding)
+                    plt.ylim(rows.min() - y_padding, rows.max() + y_padding)
+
+                    # Force square appearance by stretching the y-axis
+                    plt.gca().set_aspect((columns.max() - columns.min() + 2 * x_padding) / 
+                                        (rows.max() - rows.min() + 2 * y_padding))  # Adjust for padded ranges
+                    plt.gca().invert_yaxis()  # Maintain spatial orientation
+                    # Add colorbar and title
+                    plt.colorbar(ticks=range(config.data.num_clusters+1), label="True Label").set_ticklabels(["NA"] + list(int_to_region.values()))
+                    plt.tight_layout()  # Minimize padding around the plot
+                else:
+
+                    plt.imshow(cluster_grid.cpu(), cmap=colormap, interpolation='nearest', origin='lower')
+                    plt.colorbar(ticks=range(config.data.num_clusters + 1), label='Cluster Values')
                 plt.title('Posterior Cluster Assignment with XenNF')
 
                 if not os.path.exists(xennf_clusters_filepath := save_filepath(config)):
@@ -419,7 +448,34 @@ def posterior_eval(
 
                 # no axis version save for writeup
                 plt.figure(figsize=(6, 6))
-                plt.imshow(cluster_grid.cpu(), cmap=colors, interpolation='nearest', origin='lower', extent=(0, num_cols, 0, num_rows), aspect='auto')
+                if config.data.dataset == "DLPFC":
+
+                    # Create mapping between region names and integer codes
+                    region_to_int = {name: code + 1 for code, name in enumerate(original_adata.xenium_spot_data.obs["Region"].cat.categories)}
+                    int_to_region = {code + 1: name for code, name in enumerate(original_adata.xenium_spot_data.obs["Region"].cat.categories)}
+
+                    # Scatter plot
+                    plt.scatter(columns, rows, c=cluster_assignments_posterior.cpu()+1, cmap=colormap, marker='h', s=12)#, edgecolors='white')
+
+                    # Calculate padding for the axis limits
+                    x_padding = (columns.max() - columns.min()) * 0.02  # 2% padding
+                    y_padding = (rows.max() - rows.min()) * 0.02        # 2% padding
+
+                    # Set axis limits with padding
+                    plt.xlim(columns.min() - x_padding, columns.max() + x_padding)
+                    plt.ylim(rows.min() - y_padding, rows.max() + y_padding)
+
+                    # Force square appearance by stretching the y-axis
+                    plt.gca().set_aspect((columns.max() - columns.min() + 2 * x_padding) / 
+                                        (rows.max() - rows.min() + 2 * y_padding))  # Adjust for padded ranges
+                    plt.gca().invert_yaxis()  # Maintain spatial orientation
+                    # Add colorbar and title
+                    plt.colorbar(ticks=range(config.data.num_clusters+1), label="True Label").set_ticklabels(["NA"] + list(int_to_region.values()))
+                    plt.tight_layout()  # Minimize padding around the plot
+                else:
+
+                    plt.imshow(cluster_grid.cpu(), cmap=colormap, interpolation='nearest', origin='lower')
+                    plt.colorbar(ticks=range(config.data.num_clusters + 1), label='Cluster Values')
                 plt.axis('off')
 
                 if not os.path.exists(xennf_clusters_filepath := save_filepath(config)):
@@ -509,12 +565,26 @@ if __name__ == "__main__":
         hidden_layers=(128, 128, 128)
     )
 
-    # setup the data graph
-    positions = torch.tensor(spatial_locations.to_numpy()).float()
-    edge_index = pyg.nn.knn_graph(positions, k=1+4*config.data.neighborhood_size, loop=True)
+    # handle DLPFC missingness
+    if config.data.dataset == "DLPFC":
 
-    input_x = torch.tensor(original_adata.xenium_spot_data.X, dtype=torch.float32)
-    graph = Data(x=data, edge_index=edge_index)
+        non_na_mask = ~original_adata.xenium_spot_data.obs["Region"].isna()
+        data = data[non_na_mask]
+
+        # setup the data graph
+        positions = torch.tensor(spatial_locations[non_na_mask].to_numpy()).float()
+        edge_index = pyg.nn.knn_graph(positions, k=1+4*config.data.neighborhood_size, loop=True)
+
+        input_x = torch.tensor(original_adata.xenium_spot_data.X[non_na_mask], dtype=torch.float32)
+        graph = Data(x=data, edge_index=edge_index)
+    else:
+
+        # setup the data graph
+        positions = torch.tensor(spatial_locations.to_numpy()).float()
+        edge_index = pyg.nn.knn_graph(positions, k=1+4*config.data.neighborhood_size, loop=True)
+
+        input_x = torch.tensor(original_adata.xenium_spot_data.X, dtype=torch.float32)
+        graph = Data(x=data, edge_index=edge_index)
 
     # update the flow to use the gcn as the hypernet
     cluster_probs_graph_flow_dist = edit_flow_nn(config, cluster_probs_graph_flow_dist, graph, config.flows.gconv_type)

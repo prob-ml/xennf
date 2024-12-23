@@ -33,17 +33,28 @@ for ft in flow_type:
         graph_conv,
     )))
 
+def get_resolution(dataset, init_method, data_dimension=5, num_clusters=7):
+    match dataset:
+        case "SYNTHETIC":
+            if init_method == "Leiden":
+                return 0.47
+            return 0.65
+        case "DLPFC":
+            if init_method == "Leiden":
+                return 0.175
+            return 0.25
+
 for i, combo in enumerate(all_combinations):
 
     flow_type, flow_length, init_method, hidden_layers, neighborhood_size, graph_conv = combo
 
     config_yaml = f"""
     data:
-        dataset: "SYNTHETIC"
-        data_dimension: 5
+        dataset: {DATASET}
+        data_dimension: {3 if DATASET == "DLPFC" else 5}
         num_clusters: 7
-        resolution: {0.65 if init_method == "Louvain" else 0.47} # 0.47 for Leiden, 0.65 for Louvain when K = 7
-        num_pcs: 3
+        resolution: {get_resolution(DATASET, init_method)}
+        num_pcs: {3 if DATASET == "DLPFC" else 5}
         init_method: {init_method}
         neighborhood_size: {neighborhood_size}
         neighborhood_agg: "mean"
