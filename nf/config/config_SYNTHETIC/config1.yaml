@@ -15,7 +15,7 @@ data:
   num_pcs: 3
   resolution: 0.65
 flows:
-  batch_size: 512
+  batch_size: -1
   flow_length: 32
   gconv_type: GCN
   hidden_layers:

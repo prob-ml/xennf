@@ -104,10 +104,10 @@ class GCNModule(nn.Module):
     def forward(self, x, edge_index):
         return self.conv(x, edge_index)
 
-def custom_cluster_initialization(original_adata, method, K=17, num_pcs=3, resolution=0.45, dataset="SYNTHETIC"):
+def custom_cluster_initialization(original_adata, method, K=17, num_pcs=3, resolution=0.45, dataset="SYNTHETIC", neighborhood_size=1):
 
     # this is important for graph based methods
-    original_adata.generate_neighborhood_graph(original_adata.xenium_spot_data, n_neighbors=15, n_pcs=num_pcs, plot_pcas=False)
+    original_adata.generate_neighborhood_graph(original_adata.xenium_spot_data, n_neighbors=1+4*config.data.neighborhood_size, n_pcs=num_pcs, plot_pcas=False)
 
     # This function initializes clusters based on the specified method
     if method == "K-Means":
@@ -149,7 +149,6 @@ def prepare_data(config):
     MIN_CONCENTRATION = config.VI.min_concentration
 
     gene_data = StandardScaler().fit_transform(gene_data)
-
     data = torch.tensor(gene_data).float()
     num_obs, data_dim = data.shape
 
@@ -159,7 +158,7 @@ def prepare_data(config):
     num_rows = max(rows) + 1
     num_cols = max(columns) + 1
 
-    initial_clusters = custom_cluster_initialization(original_adata, config.data.init_method, K=config.data.num_clusters, num_pcs=config.data.num_pcs, resolution=config.data.resolution, dataset=config.data.dataset)
+    initial_clusters = custom_cluster_initialization(original_adata, config.data.init_method, K=config.data.num_clusters, num_pcs=config.data.num_pcs, resolution=config.data.resolution, dataset=config.data.dataset, neighborhood_size=config.data.neighborhood_size)
 
     if config.data.dataset == "SYNTHETIC":
         ari = ARI(initial_clusters, TRUE_PRIOR_WEIGHTS.argmax(axis=-1))
@@ -194,6 +193,7 @@ def prepare_data(config):
 
     empirical_prior_means = torch.zeros(config.data.num_clusters, gene_data.shape[1])
     empirical_prior_scales = torch.ones(config.data.num_clusters, gene_data.shape[1])
+    assert sum(np.unique(initial_clusters) >= 0) == config.data.num_clusters, "K doesn't match initial number of unique detected clusters."
     if config.VI.empirical_prior:
         for i in range(config.data.num_clusters):
             cluster_data = gene_data[initial_clusters == i]
@@ -511,7 +511,6 @@ def posterior_eval(
 
                 current_power += 1
 
-
 if __name__ == "__main__":
     import argparse
 
@@ -586,6 +585,10 @@ if __name__ == "__main__":
         input_x = torch.tensor(original_adata.xenium_spot_data.X, dtype=torch.float32)
         graph = Data(x=data, edge_index=edge_index)
 
+    # we are modelling over the whole graph
+    if config.flows.batch_size == -1:
+        config.flows.batch_size = len(data)
+
     # update the flow to use the gcn as the hypernet
     cluster_probs_graph_flow_dist = edit_flow_nn(config, cluster_probs_graph_flow_dist, graph, config.flows.gconv_type)
 
@@ -600,32 +603,49 @@ if __name__ == "__main__":
             cluster_scales = pyro.sample("cluster_scales", dist.LogNormal(empirical_prior_scales, 10.0).to_event(1))
 
         cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_graph_flow_dist()).expand([len(data)]).to_event(1))
-        # print("MODEL ", cluster_logits.shape, data.shape)
 
-        # Define priors for the cluster assignment probabilities and Gaussian parameters
-        with pyro.plate("data", len(data), subsample_size=config.flows.batch_size) as ind:
-            batch_data = data[ind]
-            batch_logits = cluster_logits[..., ind, :]
-            # print("BATCH DATA: ", batch_data.shape)
-            # print("BATCH LOGITS: ", batch_logits.shape)
-            # likelihood for batch
+        with pyro.plate("data", len(data)):
+
             if cluster_means.dim() == expected_total_param_dim:
                 pyro.sample(f"obs", dist.MixtureOfDiagNormals(
                         cluster_means.unsqueeze(0).expand(config.flows.batch_size, -1, -1), 
                         cluster_scales.unsqueeze(0).expand(config.flows.batch_size, -1, -1), 
-                        batch_logits.squeeze(1)
+                        cluster_logits.squeeze(1)
                     ), 
-                    obs=batch_data
+                    obs=data
                 )
             # likelihood for batch WITH vectorization of particles
             else:
                 pyro.sample(f"obs", dist.MixtureOfDiagNormals(
                         cluster_means.unsqueeze(1).expand(-1, config.flows.batch_size, -1, -1), 
                         cluster_scales.unsqueeze(1).expand(-1, config.flows.batch_size, -1, -1), 
-                        batch_logits.squeeze(1)
+                        cluster_logits.squeeze(1)
                     ), 
-                    obs=batch_data
+                    obs=data
                 )
+
+        # # Define priors for the cluster assignment probabilities and Gaussian parameters
+        # with pyro.plate("data", len(data), subsample_size=config.flows.batch_size) as ind:
+        #     batch_data = data[ind]
+        #     batch_logits = cluster_logits[..., ind, :]
+        #     # likelihood for batch
+        #     if cluster_means.dim() == expected_total_param_dim:
+        #         pyro.sample(f"obs", dist.MixtureOfDiagNormals(
+        #                 cluster_means.unsqueeze(0).expand(config.flows.batch_size, -1, -1), 
+        #                 cluster_scales.unsqueeze(0).expand(config.flows.batch_size, -1, -1), 
+        #                 batch_logits.squeeze(1)
+        #             ), 
+        #             obs=batch_data
+        #         )
+        #     # likelihood for batch WITH vectorization of particles
+        #     else:
+        #         pyro.sample(f"obs", dist.MixtureOfDiagNormals(
+        #                 cluster_means.unsqueeze(1).expand(-1, config.flows.batch_size, -1, -1), 
+        #                 cluster_scales.unsqueeze(1).expand(-1, config.flows.batch_size, -1, -1), 
+        #                 batch_logits.squeeze(1)
+        #             ), 
+        #             obs=batch_data
+        #         )
 
     cluster_probs_flow_dist = setup_zuko_flow(
         flow_type=config.flows.posterior_flow_type,

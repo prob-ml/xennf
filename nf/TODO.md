@@ -1,0 +1,9 @@
+- [ ] Configure strength of prior flow with learnable temperature param.
+- [ ] Investigate proper mu and sigma prior scale values.
+- [ ] AI Checker
+- [ ] Gumbel Model
+- [ ] Model Clarity Writing
+- [ ] CNF Background
+- [ ] Investigate narrower hidden layers for...
+    - [ ] Weaker/strong priors.
+    - [ ] Better posterior models.

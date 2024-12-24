@@ -553,7 +553,7 @@ class XeniumCluster:
                 f"{self.target_dir}/clusters_K={K}.png"
             )
 
-            return cluster_assignments
+            return data.obs["cluster"]
             
     def BayesSpace(
         self,

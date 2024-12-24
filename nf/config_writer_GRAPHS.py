@@ -40,7 +40,7 @@ def get_resolution(dataset, init_method, data_dimension=5, num_clusters=7):
                 return 0.47
             return 0.65
         case "DLPFC":
-            if init_method == "Leiden":
+            if init_method == "Louvain":
                 return 0.175
             return 0.25
 
