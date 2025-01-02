@@ -6,7 +6,7 @@ from torch import Size, Tensor
 import pyro
 import copy
 from pyro.infer import SVI, Trace_ELBO, TraceMeanField_ELBO
-from pyro.optim import Adam, PyroOptim
+from pyro.optim import Adam, PyroOptim, SGD
 
 import pyro.distributions as dist
 import pyro.distributions.transforms as T
@@ -66,13 +66,13 @@ class GCNFlowModel(nn.Module):
                 ])
             case "SAGE" | "cuSAGE":
                 self.layers = nn.ModuleList([
-                    GCNModule(in_features, 512, conv_type),
+                    GCNModule(in_features, 128, conv_type),
                     nn.ReLU(),
-                    GCNModule(512, 512, conv_type),
-                    nn.ReLU(),
-                    GCNModule(512, 512, conv_type),
-                    nn.ReLU(),
-                    GCNModule(512, out_features, conv_type)
+                    # GCNModule(512, 512, conv_type),
+                    # nn.ReLU(),
+                    # GCNModule(512, 512, conv_type),
+                    # nn.ReLU(),
+                    GCNModule(128, out_features, conv_type)
                 ])
             case _:
                 raise NotImplementedError(f"{conv_type} not supported yet.")
@@ -280,6 +280,7 @@ def train(
             return {"lr": config.flows.lr, "betas": (0.9, 0.999)}
 
     scheduler = Adam(per_param_callable)
+    # scheduler = SGD({"lr": 0.001})
 
     # Setup the inference algorithm
     svi = SVI(model, guide, scheduler, loss=TraceMeanField_ELBO(num_particles=config.VI.num_particles, vectorize_particles=True))
@@ -556,6 +557,8 @@ if __name__ == "__main__":
         cluster_states
     ) = prepare_data(config)
 
+    print(empirical_prior_means, empirical_prior_scales)
+
     cluster_probs_graph_flow_dist = setup_zuko_flow(
         flow_type=config.flows.prior_flow_type,
         flow_length=config.flows.flow_length,
@@ -573,6 +576,7 @@ if __name__ == "__main__":
         # setup the data graph
         positions = torch.tensor(spatial_locations[non_na_mask].to_numpy()).float()
         edge_index = pyg.nn.knn_graph(positions, k=1+4*config.data.neighborhood_size, loop=True)
+        edge_index = pyg.nn.radius_graph(positions, r=2, loop=True)
 
         input_x = torch.tensor(original_adata.xenium_spot_data.X[non_na_mask], dtype=torch.float32)
         graph = Data(x=data, edge_index=edge_index)

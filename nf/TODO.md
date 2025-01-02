@@ -4,6 +4,11 @@
 - [ ] Gumbel Model
 - [ ] Model Clarity Writing
 - [ ] CNF Background
+    - [ ] Make adjoint clearer.
+    - [ ] Synopsis of what CNF gives us.
+    - [ ] Grad outputs writing.
 - [ ] Investigate narrower hidden layers for...
     - [ ] Weaker/strong priors.
     - [ ] Better posterior models.
+- [ ] Not KNN adjacency. Use distance instead.
+- [ ] Allow mclust initialization.

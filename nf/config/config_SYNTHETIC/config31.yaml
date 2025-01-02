@@ -22,7 +22,6 @@ flows:
   - 512
   - 512
   - 512
-  - 512
   lr: 0.001
   num_epochs: 1000
   patience: 50

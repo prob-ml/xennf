@@ -2,28 +2,28 @@ VI:
   empirical_prior: true
   learn_global_variances: false
   min_concentration: 0.0001
-  num_particles: 3
+  num_particles: 5
   num_posterior_samples: 2500
   num_prior_samples: 1000
 data:
-  data_dimension: 3
+  data_dimension: ${data.num_pcs}
   dataset: DLPFC
-  init_method: K-Means
+  init_method: mclust
   neighborhood_agg: mean
-  neighborhood_size: 2
+  neighborhood_size: 1
   num_clusters: 7
-  num_pcs: 3
-  resolution: 0.21
+  num_pcs: 20
+  resolution: 0.195
 flows:
   batch_size: -1
-  flow_length: 2
-  gconv_type: SAGE
+  flow_length: 8
+  gconv_type: GCN
   hidden_layers:
   - 512
   - 512
   - 512
-  lr: 0.001
-  num_epochs: 1000
-  patience: 25
+  lr: 0.00075
+  num_epochs: 10000
+  patience: 15
   posterior_flow_type: MAF
   prior_flow_type: CNF

@@ -11,7 +11,7 @@ def format_command(name):
     )
 
 # Generate the command for each combination
-config_list = [x.replace('config', '').replace('.yaml', '') for x in os.listdir('config/config_SYNTHETIC')]
+config_list = [x.replace('config', '').replace('.yaml', '') for x in os.listdir('config/config_DLPFC')]
 commands = [format_command(i) for i in range(len(config_list))]
 
 # Split commands into 3 groups for the 3 GPUs
