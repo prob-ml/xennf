@@ -2,6 +2,7 @@ if (!requireNamespace("mclust", quietly = TRUE)) {
     install.packages("mclust")
 }
 library(mclust)
+
 mclust_wrapper <- function(data, G, num_pcs=10, SPOT_SIZE=50, dataset_name="hBreast", dir_path=NULL) {
     res = Mclust(data, G=G, modelNames="EEE")
 

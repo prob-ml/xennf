@@ -271,16 +271,15 @@ def train(
 
     def per_param_callable(param_name):
         if param_name == 'cluster_means_q_mean':
-            return {"lr": config.flows.lr, "betas": (0.9, 0.999)}
+            return {"lr": 0.001, "betas": (0.9, 0.999)}
         elif param_name == 'cluster_scales_q_mean':
-            return {"lr": config.flows.lr, "betas": (0.9, 0.999)}
+            return {"lr": 0.001, "betas": (0.9, 0.999)}
         elif "logit" in param_name:
             return {"lr": config.flows.lr, "betas": (0.9, 0.999)}
         else:
             return {"lr": config.flows.lr, "betas": (0.9, 0.999)}
 
     scheduler = Adam(per_param_callable)
-    # scheduler = SGD({"lr": 0.001})
 
     # Setup the inference algorithm
     svi = SVI(model, guide, scheduler, loss=TraceMeanField_ELBO(num_particles=config.VI.num_particles, vectorize_particles=True))
@@ -294,6 +293,14 @@ def train(
             loss = svi.step(data)
             running_loss += loss / config.flows.batch_size
         epoch_pbar.set_description(f"Epoch {epoch} : loss = {round(running_loss, 4)}")
+
+        if epoch % 5 == 0 or epoch == 1:
+            cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
+            cluster_assignments_posterior = torch.argmax(torch.softmax(cluster_logits, dim=1), dim=1)
+
+            if config.data.dataset == "DLPFC":
+                true_assignments = original_adata.xenium_spot_data.obs.loc[~original_adata.xenium_spot_data.obs["Region"].isna(), "Region"]
+                print(f"ARI: {ARI(cluster_assignments_posterior.detach().cpu(), true_assignments):.3f}, NMI: {NMI(cluster_assignments_posterior.detach().cpu(), true_assignments):.3f}")
 
         if running_loss > current_min_loss:
             patience_counter += 1
@@ -557,8 +564,6 @@ if __name__ == "__main__":
         cluster_states
     ) = prepare_data(config)
 
-    print(empirical_prior_means, empirical_prior_scales)
-
     cluster_probs_graph_flow_dist = setup_zuko_flow(
         flow_type=config.flows.prior_flow_type,
         flow_length=config.flows.flow_length,
@@ -596,6 +601,8 @@ if __name__ == "__main__":
     # update the flow to use the gcn as the hypernet
     cluster_probs_graph_flow_dist = edit_flow_nn(config, cluster_probs_graph_flow_dist, graph, config.flows.gconv_type)
 
+    TEMPERATURE = 0.75
+
     def model(data):
 
         pyro.module("prior_flow", cluster_probs_graph_flow_dist)
@@ -607,13 +614,16 @@ if __name__ == "__main__":
             cluster_scales = pyro.sample("cluster_scales", dist.LogNormal(empirical_prior_scales, 10.0).to_event(1))
 
         cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_graph_flow_dist()).expand([len(data)]).to_event(1))
+        max_logit = torch.max(cluster_logits, dim=-1, keepdim=True).values
+        stable_logits = cluster_logits - max_logit
+        stable_logits = torch.clamp(stable_logits, min=-10.0, max=0)
         # Add a Potts-like penalty for each edge: 
-        beta = 0.2
+        beta = 0.02
         z = pyro.sample(
                 "z", 
                 dist.RelaxedOneHotCategorical(
-                    temperature=torch.tensor([0.1]),
-                    logits=cluster_logits
+                    temperature=torch.tensor([TEMPERATURE]),
+                    logits=stable_logits
                 ).to_event(1)
             )
         assignment_diff = torch.norm(z[..., edge_index[0], :] - z[..., edge_index[1], :], p=2, dim=-1).sum()
@@ -691,11 +701,14 @@ if __name__ == "__main__":
                 cluster_scales = pyro.sample("cluster_scales", dist.Delta(cluster_scales_q_mean).to_event(1))
 
         cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
+        max_logit = torch.max(cluster_logits, dim=-1, keepdim=True).values
+        stable_logits = cluster_logits - max_logit
+        stable_logits = torch.clamp(stable_logits, min=-10.0, max=0)
         z = pyro.sample(
             "z", 
             dist.RelaxedOneHotCategorical(
-                temperature=torch.tensor([1.0]),
-                logits=cluster_logits
+                temperature=torch.tensor([TEMPERATURE]),
+                logits=stable_logits
             ).to_event(1)
         )
 

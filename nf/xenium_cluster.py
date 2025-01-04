@@ -644,6 +644,10 @@ class XeniumCluster:
             except subprocess.CalledProcessError as e:
                 print(f"An error occurred while running the R script: {e.output}")
                 raise
+
+        if self.dataset_name == "DLPFC":
+            non_na_mask = ~data.obs["Region"].isna()
+
         try:
             np.savetxt(temp_dir, data.obsm["X_pca"], delimiter=",")
         except KeyError:
@@ -652,7 +656,12 @@ class XeniumCluster:
         num_output_clusters = run_r_script("mclust.R", temp_dir, f"{G}", f"{data.obsm['X_pca'].shape[1]}", f"{self.SPOT_SIZE}", self.dataset_name, self.target_dir)
 
         mclust_clusters = pd.read_csv(f"{self.target_dir}/clusters_K={G}.csv", index_col=0)
-        data.obs["cluster"] = np.array(mclust_clusters["mclust cluster"])
+
+        if self.dataset_name == "DLPFC":
+            data.obs["cluster"] = -1
+            data.obs["cluster"][non_na_mask] = np.array(mclust_clusters["mclust cluster"])
+        else:
+            data.obs["cluster"] = np.array(mclust_clusters["mclust cluster"])
     
         # Extracting row, col, and cluster values from the dataframe
         rows = torch.tensor(data.obs["row"].astype(int))
@@ -667,21 +676,53 @@ class XeniumCluster:
         cluster_grid[rows, cols] = torch.tensor(clusters, dtype=torch.int) + 1
 
         if self.dataset_name == "SYNTHETIC":
-            cluster_grid[rows, cols] = torch.tensor(clusters, dtype=torch.int)
             colormap = plt.cm.get_cmap('viridis', num_clusters)
+        elif self.dataset_name == "DLPFC":
+            colors = plt.cm.get_cmap('viridis', num_clusters)
+            grey_color = [0.5, 0.5, 0.5, 1]  # Medium gray for unused cluster
+            colormap_colors = np.vstack((grey_color, colors(np.linspace(0, 1, num_clusters-1))))
+            colormap = ListedColormap(colormap_colors)
         else:
-            cluster_grid[rows, cols] = torch.tensor(clusters, dtype=torch.int) + 1
             colors = plt.cm.get_cmap('viridis', num_clusters + 1)
             colormap_colors = np.vstack(([[1, 1, 1, 1]], colors(np.linspace(0, 1, num_clusters))))
             colormap = ListedColormap(colormap_colors)
 
+
         plt.figure(figsize=(6, 6))
-        plt.imshow(cluster_grid.cpu(), cmap=colormap, interpolation='nearest', origin='lower')
-        plt.colorbar(ticks=range(num_clusters + 1), label='Cluster Values')
+        if self.dataset_name == "DLPFC":
+
+            rows, cols, clusters = rows.cpu(), cols.cpu(), clusters.cpu()
+
+            # Create mapping between region names and integer codes
+            region_to_int = {name: code + 1 for code, name in enumerate(data.obs["Region"].cat.categories)}
+            int_to_region = {code + 1: name for code, name in enumerate(data.obs["Region"].cat.categories)}
+
+            # Scatter plot
+            plt.scatter(cols, rows, c=clusters+1, cmap=colormap, marker='h', s=12)#, edgecolors='white')
+
+            # Calculate padding for the axis limits
+            x_padding = (cols.max() - cols.min()) * 0.02  # 2% padding
+            y_padding = (rows.max() - rows.min()) * 0.02  # 2% padding
+
+            # Set axis limits with padding
+            plt.xlim(cols.min() - x_padding, cols.max() + x_padding)
+            plt.ylim(rows.min() - y_padding, rows.max() + y_padding)
+
+            # Force square appearance by stretching the y-axis
+            plt.gca().set_aspect((cols.max() - cols.min() + 2 * x_padding) / 
+                                (rows.max() - rows.min() + 2 * y_padding))  # Adjust for padded ranges
+            plt.gca().invert_yaxis()  # Maintain spatial orientation
+            # Add colorbar and title
+            plt.colorbar(ticks=range(num_clusters), label="True Label").set_ticklabels(["NA"] + list(int_to_region.values()))
+            plt.tight_layout()  # Minimize padding around the plot
+        else:
+
+            plt.imshow(cluster_grid.cpu(), cmap=colormap, interpolation='nearest', origin='lower')
+            plt.colorbar(ticks=range(num_clusters + 1), label='Cluster Values')
         plt.title(f'Cluster Assignment with mclust')
 
         plt.savefig(
             f"{self.target_dir}/clusters_K={G}.png"
         )
 
-        return data.obs["cluster"].values
+        return data.obs["cluster"]

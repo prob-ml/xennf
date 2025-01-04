@@ -2,16 +2,22 @@ import itertools
 import yaml
 import os
 
-flow_type = ["CNF", "MAF", "NSF"]
-flow_length_by_type = {
+prior_flow_type = ["MAF"]
+posterior_flow_type = ["MAF", "NSF"]
+prior_flow_length_by_type = {
     "CNF": [32],  # CNF only needs one "flow length" since it doesn't use one
     "MAF": [2, 4, 8],
     "NSF": [2, 4, 8]
 }
-init_method = ["Louvain", "K-Means"]
+posterior_flow_length_by_type = {
+    "CNF": [32],  # CNF only needs one "flow length" since it doesn't use one
+    "MAF": [16, 32, 64],
+    "NSF": [16, 32, 64]
+}
+init_method = ["Louvain", "K-Means", "mclust"]
 hidden_layers = [
-    [512, 512, 512],
-    [512, 512, 512, 512]
+    [128, 128],
+    [512, 512]
 ]
 neighborhood_size = [1]
 graph_conv = ["GCN", "SAGE"]
@@ -23,15 +29,18 @@ os.makedirs(config_filepath, exist_ok=True)
 
 # Generate all possible combinations
 all_combinations = []
-for ft in flow_type:
-    all_combinations.extend(list(itertools.product(
-        [ft],
-        flow_length_by_type[ft],
-        init_method,
-        hidden_layers,
-        neighborhood_size,
-        graph_conv,
-    )))
+for prior_ft in prior_flow_type:
+    for posterior_ft in posterior_flow_type:
+        all_combinations.extend(list(itertools.product(
+            (prior_ft,),  # Wrap prior_ft in a tuple
+            (posterior_ft,),  # Wrap posterior_ft in a tuple
+            prior_flow_length_by_type[prior_ft],
+            posterior_flow_length_by_type[posterior_ft],
+            init_method,
+            hidden_layers,
+            neighborhood_size,
+            graph_conv,
+        )))
 
 def get_resolution(dataset, init_method, data_dimension=5, num_clusters=7):
     match dataset:
@@ -41,12 +50,19 @@ def get_resolution(dataset, init_method, data_dimension=5, num_clusters=7):
             return 0.65
         case "DLPFC":
             if init_method == "Louvain":
-                return 0.175
+                return 0.195
             return 0.25
 
 for i, combo in enumerate(all_combinations):
 
-    flow_type, flow_length, init_method, hidden_layers, neighborhood_size, graph_conv = combo
+    prior_flow_type = combo[0]
+    posterior_flow_type = combo[1]
+    prior_flow_length = combo[2]
+    posterior_flow_length = combo[3]
+    init_method = combo[4]
+    hidden_layers = combo[5]
+    neighborhood_size = combo[6]
+    graph_conv = combo[7]
 
     config_yaml = f"""
     data:
@@ -67,14 +83,15 @@ for i, combo in enumerate(all_combinations):
         num_particles: 3
     flows:
         gconv_type: {graph_conv}
-        prior_flow_type: CNF
-        posterior_flow_type: {flow_type}
-        flow_length: {flow_length}
+        prior_flow_type: {prior_flow_type}
+        prior_flow_length: {prior_flow_length}
+        posterior_flow_type: {posterior_flow_type}
+        posterior_flow_length: {posterior_flow_length}
         hidden_layers: {hidden_layers}
-        num_epochs: 2500
-        batch_size: 512
+        num_epochs: 10000
+        batch_size: -1
         patience: 50
-        lr: 0.001
+        lr: 0.00075
     """
 
     config_file = yaml.safe_load(config_yaml)

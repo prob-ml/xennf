@@ -6,7 +6,7 @@ from torch import Size, Tensor
 import pyro
 import copy
 from pyro.infer import SVI, Trace_ELBO, TraceMeanField_ELBO
-from pyro.optim import Adam, PyroOptim, SGD
+from pyro.optim import Adam, ClippedAdam, PyroOptim, SGD
 
 import pyro.distributions as dist
 import pyro.distributions.transforms as T
@@ -52,31 +52,30 @@ class GCNFlowModel(nn.Module):
         match conv_type:
             case "GCN":
                 self.layers = nn.ModuleList([
-                    GCNModule(in_features, 512, conv_type),
-                    nn.ReLU(),
-                    GCNModule(512, 512, conv_type),
-                    nn.ReLU(),
-                    GCNModule(512, 512, conv_type),
-                    nn.ReLU(),
-                    GCNModule(512, out_features, conv_type)
+                    GCNModule(in_features, 128, conv_type),
+                    nn.Sigmoid(),
+                    GCNModule(128, out_features, conv_type),
                 ])
             case "SGCN":
-                self.layers =  nn.ModuleList([
+                self.layers = nn.ModuleList([
                     GCNModule(in_features, out_features, conv_type),
                 ])
             case "SAGE" | "cuSAGE":
                 self.layers = nn.ModuleList([
                     GCNModule(in_features, 128, conv_type),
-                    nn.ReLU(),
-                    # GCNModule(512, 512, conv_type),
-                    # nn.ReLU(),
-                    # GCNModule(512, 512, conv_type),
-                    # nn.ReLU(),
+                    nn.Sigmoid(),
                     GCNModule(128, out_features, conv_type)
                 ])
             case _:
                 raise NotImplementedError(f"{conv_type} not supported yet.")
-    
+        
+        # Initialize weights with Xavier initialization
+        for layer in self.layers:
+            if isinstance(layer, GCNModule):
+                for param in layer.parameters():
+                    if param.dim() > 1:  # Only apply to weights
+                        nn.init.xavier_uniform_(param)
+
     def forward(self, x):
         for i, layer in enumerate(self.layers):
             if isinstance(layer, GCNModule):
@@ -100,6 +99,11 @@ class GCNModule(nn.Module):
                 self.conv = CuGraphSAGEConv(in_channels, out_channels)
             case _:
                 raise NotImplementedError("This convolutional layer does not have support.")
+
+        # Initialize weights with Xavier initialization
+        for param in self.parameters():
+            if param.dim() > 1:  # Only apply to weights
+                nn.init.xavier_uniform_(param)
 
     def forward(self, x, edge_index):
         return self.conv(x, edge_index)
@@ -275,7 +279,7 @@ def train(
         elif param_name == 'cluster_scales_q_mean':
             return {"lr": config.flows.lr, "betas": (0.9, 0.999)}
         elif "logit" in param_name:
-            return {"lr": config.flows.lr, "betas": (0.9, 0.999)}
+            return {"lr": config.flows.lr, "betas": (0.9, 0.999), "clip_norm": 1.0}
         else:
             return {"lr": config.flows.lr, "betas": (0.9, 0.999)}
 
@@ -295,15 +299,26 @@ def train(
             running_loss += loss / config.flows.batch_size
         epoch_pbar.set_description(f"Epoch {epoch} : loss = {round(running_loss, 4)}")
 
+        if epoch % 5 == 0 or epoch == 1:
+            cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
+            cluster_assignments_posterior = torch.argmax(torch.softmax(cluster_logits, dim=1), dim=1)
+
+            if config.data.dataset == "DLPFC":
+                true_assignments = original_adata.xenium_spot_data.obs.loc[~original_adata.xenium_spot_data.obs["Region"].isna(), "Region"]
+                print(f"ARI: {ARI(cluster_assignments_posterior.detach().cpu(), true_assignments):.3f}, NMI: {NMI(cluster_assignments_posterior.detach().cpu(), true_assignments):.3f}")
+
         if running_loss > current_min_loss:
             patience_counter += 1
         else:
             current_min_loss = running_loss
             patience_counter = 0
+            best_params = pyro.get_param_store().get_state()
         if patience_counter >= config.flows.patience:
             break
 
         torch.cuda.empty_cache()
+
+    return best_params
 
 def save_filepath(config):
     total_file_path = os.path.join(
@@ -313,9 +328,10 @@ def save_filepath(config):
         f"INIT={config.data.init_method}", 
         f"NEIGHBORSIZE={config.data.neighborhood_size}", 
         f"PRIOR_FLOW_TYPE={config.flows.prior_flow_type}", 
+        f"PRIOR_FLOW_LENGTH={config.flows.prior_flow_length}" if config.flows.posterior_flow_type != 'CNF' else '', 
         f"GCONV={config.flows.gconv_type}", 
         f"POST_FLOW_TYPE={config.flows.posterior_flow_type}", 
-        f"FLOW_LENGTH={config.flows.flow_length}" if config.flows.posterior_flow_type != 'CNF' else '', 
+        f"POST_FLOW_LENGTH={config.flows.posterior_flow_length}" if config.flows.posterior_flow_type != 'CNF' else '', 
         f"HIDDEN_LAYERS={config.flows.hidden_layers}"
     )
     return total_file_path
@@ -401,14 +417,12 @@ def posterior_eval(
                 elif config.data.dataset == "DLPFC":
                     colors = plt.cm.get_cmap('viridis', config.data.num_clusters)
                     grey_color = [0.5, 0.5, 0.5, 1]  # Medium gray for unused cluster
-                    colormap_colors = np.vstack((grey_color, colors(np.linspace(0, 1, config.data.num_clusters-1))))
+                    colormap_colors = np.vstack((grey_color, colors(np.linspace(0, 1, config.data.num_clusters))))
                     colormap = ListedColormap(colormap_colors)
                 else:
                     colors = plt.cm.get_cmap('viridis', config.data.num_clusters + 1)
                     colormap_colors = np.vstack(([[1, 1, 1, 1]], colors(np.linspace(0, 1, config.data.num_clusters))))
                     colormap = ListedColormap(colormap_colors)
-
-                colors = plt.cm.get_cmap('viridis', config.data.num_clusters + 1)
 
                 plt.figure(figsize=(6, 6))
                 if config.data.dataset == "DLPFC":
@@ -544,7 +558,7 @@ if __name__ == "__main__":
     torch.set_printoptions(sci_mode=False)
     expected_total_param_dim = 2 # K x D
     warnings.filterwarnings("ignore")
-    config = OmegaConf.load(f'config/config_SYNTHETIC/config{args.config_name}.yaml')
+    config = OmegaConf.load(f'config/config_DLPFC/config{args.config_name}.yaml')
 
     (
         data, 
@@ -561,10 +575,10 @@ if __name__ == "__main__":
 
     cluster_probs_graph_flow_dist = setup_zuko_flow(
         flow_type=config.flows.prior_flow_type,
-        flow_length=config.flows.flow_length,
+        flow_length=config.flows.prior_flow_length,
         num_clusters=config.data.num_clusters,
         context_length=0,
-        hidden_layers=(128, 128, 128)
+        hidden_layers=(128, 128)
     )
 
     # handle DLPFC missingness
@@ -575,8 +589,19 @@ if __name__ == "__main__":
 
         # setup the data graph
         positions = torch.tensor(spatial_locations[non_na_mask].to_numpy()).float()
-        edge_index = pyg.nn.knn_graph(positions, k=1+4*config.data.neighborhood_size, loop=True)
+        # edge_index = pyg.nn.knn_graph(positions, k=1+4*config.data.neighborhood_size, loop=True)
         edge_index = pyg.nn.radius_graph(positions, r=2, loop=True)
+        
+        # Print summary metrics about the graph
+        num_nodes = positions.shape[0]
+        num_edges = edge_index.shape[1]
+        avg_degree = num_edges / num_nodes if num_nodes > 0 else 0
+        density = num_edges / (num_nodes * (num_nodes - 1)) if num_nodes > 1 else 0
+        
+        print(f"Number of nodes in the graph: {num_nodes}")
+        print(f"Number of edges in the graph: {num_edges}")
+        print(f"Average degree of the graph: {avg_degree:.2f}")
+        print(f"Density of the graph: {density:.4f}")
 
         input_x = torch.tensor(original_adata.xenium_spot_data.X[non_na_mask], dtype=torch.float32)
         graph = Data(x=data, edge_index=edge_index)
@@ -653,7 +678,7 @@ if __name__ == "__main__":
 
     cluster_probs_flow_dist = setup_zuko_flow(
         flow_type=config.flows.posterior_flow_type,
-        flow_length=config.flows.flow_length,
+        flow_length=config.flows.posterior_flow_length,
         num_clusters=config.data.num_clusters,
         context_length=config.data.data_dimension,
         hidden_layers=config.flows.hidden_layers
@@ -699,7 +724,8 @@ if __name__ == "__main__":
 
     else:
         pyro.clear_param_store()
-        train(model, guide, data, config, true_prior_weights)
+        best_params = train(model, guide, data, config, true_prior_weights)
+        pyro.get_param_store().set_state(best_params)
         if not os.path.exists(model_save_path):
             os.makedirs(model_save_path, exist_ok=True)
         model_file = os.path.join(model_save_path, 'model.save')

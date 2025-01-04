@@ -7,8 +7,8 @@
     - [ ] Make adjoint clearer.
     - [ ] Synopsis of what CNF gives us.
     - [ ] Grad outputs writing.
-- [ ] Investigate narrower hidden layers for...
+- [ ] Investigate narrower hidden layers and shallower networks:
     - [ ] Weaker/strong priors.
     - [ ] Better posterior models.
-- [ ] Not KNN adjacency. Use distance instead.
-- [ ] Allow mclust initialization.
+- [x] Not KNN adjacency. Use distance instead.
+- [x] Allow mclust initialization.
