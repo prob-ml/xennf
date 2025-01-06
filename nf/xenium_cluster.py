@@ -472,7 +472,7 @@ class XeniumCluster:
 
                 non_na_mask = ~data.obs["Region"].isna()
 
-                kmeans = KMeans(n_clusters=K).fit(spatial_init_data[non_na_mask])
+                kmeans = KMeans(n_clusters=K, n_init=20, init='random').fit(spatial_init_data[non_na_mask])
 
                 cluster_assignments = kmeans.predict(spatial_init_data[non_na_mask])
 
@@ -481,7 +481,7 @@ class XeniumCluster:
 
             else:
 
-                kmeans = KMeans(n_clusters=K).fit(spatial_init_data)
+                kmeans = KMeans(n_clusters=K, n_init=10).fit(spatial_init_data)
 
                 cluster_assignments = kmeans.predict(spatial_init_data)
 

@@ -15,7 +15,7 @@ from pyro.distributions import TransformedDistribution
 
 import torch_geometric as pyg
 import torch.nn as nn
-from torch_geometric.nn import GCNConv, SGConv, SAGEConv, CuGraphSAGEConv
+from torch_geometric.nn import GCNConv, SGConv, SAGEConv, CuGraphSAGEConv, GATConv
 from torch_geometric.data import Data
 from torch_geometric import EdgeIndex
 
@@ -53,8 +53,8 @@ class GCNFlowModel(nn.Module):
             case "GCN":
                 self.layers = nn.ModuleList([
                     GCNModule(in_features, 128, conv_type),
-                    nn.Sigmoid(),
-                    GCNModule(128, out_features, conv_type),
+                    nn.Tanh(),
+                    GCNModule(128, out_features, conv_type)
                 ])
             case "SGCN":
                 self.layers = nn.ModuleList([
@@ -63,8 +63,15 @@ class GCNFlowModel(nn.Module):
             case "SAGE" | "cuSAGE":
                 self.layers = nn.ModuleList([
                     GCNModule(in_features, 128, conv_type),
-                    nn.Sigmoid(),
+                    nn.Tanh(),
                     GCNModule(128, out_features, conv_type)
+                ])
+            case "GAT":
+                NUM_HEADS = 8
+                self.layers = nn.ModuleList([
+                    GCNModule(in_features, 128, neighborhood_size=1, conv="GAT", num_heads=NUM_HEADS),
+                    nn.Tanh(),
+                    GCNModule(128 * NUM_HEADS, out_features, neighborhood_size=1, conv="GAT", num_heads=1)
                 ])
             case _:
                 raise NotImplementedError(f"{conv_type} not supported yet.")
@@ -86,7 +93,7 @@ class GCNFlowModel(nn.Module):
 
 
 class GCNModule(nn.Module):
-    def __init__(self, in_channels, out_channels, neighborhood_size=1, conv="GCN"):
+    def __init__(self, in_channels, out_channels, neighborhood_size=1, conv="GCN", num_heads=8):
         super().__init__()
         match conv:
             case "GCN":
@@ -97,6 +104,9 @@ class GCNModule(nn.Module):
                 self.conv = SAGEConv(in_channels, out_channels)
             case "cuSAGE":
                 self.conv = CuGraphSAGEConv(in_channels, out_channels)
+            case "GAT":
+                self.conv = GATConv(in_channels, out_channels, heads=num_heads, concat=True)
+                self.conv.batch_size = None  # Allow for handling of additional batches
             case _:
                 raise NotImplementedError("This convolutional layer does not have support.")
 
@@ -275,16 +285,16 @@ def train(
 
     def per_param_callable(param_name):
         if param_name == 'cluster_means_q_mean':
-            return {"lr": config.flows.lr, "betas": (0.9, 0.999)}
+            return {"lr": 0.0001, "betas": (0.9, 0.999)}
         elif param_name == 'cluster_scales_q_mean':
-            return {"lr": config.flows.lr, "betas": (0.9, 0.999)}
+            return {"lr": 0.0001, "betas": (0.9, 0.999)}
         elif "logit" in param_name:
             return {"lr": config.flows.lr, "betas": (0.9, 0.999), "clip_norm": 1.0}
         else:
             return {"lr": config.flows.lr, "betas": (0.9, 0.999)}
 
     scheduler = Adam(per_param_callable)
-    # scheduler = SGD({"lr": 0.001})
+    scheduler = ClippedAdam(per_param_callable)
 
     # Setup the inference algorithm
     svi = SVI(model, guide, scheduler, loss=TraceMeanField_ELBO(num_particles=config.VI.num_particles, vectorize_particles=True))
@@ -297,15 +307,17 @@ def train(
         for step in range(NUM_BATCHES):
             loss = svi.step(data)
             running_loss += loss / config.flows.batch_size
+
         epoch_pbar.set_description(f"Epoch {epoch} : loss = {round(running_loss, 4)}")
 
         if epoch % 5 == 0 or epoch == 1:
-            cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
-            cluster_assignments_posterior = torch.argmax(torch.softmax(cluster_logits, dim=1), dim=1)
+            with torch.no_grad():  # Ensure no backpropagation graphs are used
+                cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
+                cluster_assignments_posterior = torch.argmax(torch.softmax(cluster_logits, dim=1), dim=1)
 
-            if config.data.dataset == "DLPFC":
-                true_assignments = original_adata.xenium_spot_data.obs.loc[~original_adata.xenium_spot_data.obs["Region"].isna(), "Region"]
-                print(f"ARI: {ARI(cluster_assignments_posterior.detach().cpu(), true_assignments):.3f}, NMI: {NMI(cluster_assignments_posterior.detach().cpu(), true_assignments):.3f}")
+                if config.data.dataset == "DLPFC":
+                    true_assignments = original_adata.xenium_spot_data.obs.loc[~original_adata.xenium_spot_data.obs["Region"].isna(), "Region"]
+                    print(f"ARI: {ARI(cluster_assignments_posterior.cpu(), true_assignments):.3f}, NMI: {NMI(cluster_assignments_posterior.cpu(), true_assignments):.3f}")
 
         if running_loss > current_min_loss:
             patience_counter += 1
@@ -356,8 +368,16 @@ def edit_flow_nn(config, flow, graph, graph_conv="GCN"):
 
             flow.transform.transforms.insert(0, copy.deepcopy(flow.transform.transforms[0]))
             flow.transform.transforms[0].hyper = network
-        case zuko.flow.spline.NSF:
-            pass
+        case zuko.flows.spline.NSF:
+            network = GCNFlowModel(
+                original_graph=graph,
+                in_features=config.data.num_clusters,  # Corrected in_features for neural spline flow
+                out_features=config.data.num_clusters,      # Corrected out_features for neural spline flow
+                conv_type=graph_conv,
+            )
+
+            flow.transform.transforms.insert(0, copy.deepcopy(flow.transform.transforms[0]))
+            flow.transform.transforms[0].hyper = network
         case _:
             # Handle default case
             pass
@@ -700,8 +720,10 @@ if __name__ == "__main__":
             else:
                 cluster_means = pyro.sample("cluster_means", dist.Delta(cluster_means_q_mean).to_event(1))
                 cluster_scales = pyro.sample("cluster_scales", dist.Delta(cluster_scales_q_mean).to_event(1))
-
-        cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
+        if config.flows.posterior_flow_type == "UMNN":
+            cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data, constant=0.0)).to_event(1))
+        else:
+            cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
         # print("GUIDE ", cluster_logits.shape)
 
     model_save_path = os.path.join(

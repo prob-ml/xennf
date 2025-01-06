@@ -82,15 +82,15 @@ class ZukoToPyro(pyro.distributions.TorchDistribution):
 def setup_zuko_flow(flow_type: str, num_clusters: int, flow_length: int = 1, context_length: int = 0, hidden_layers: Tuple[int, ...] = None):
     match flow_type:
         case "MAF":
-            cluster_probs_flow_dist = zuko.flows.MAF(
+            cluster_probs_flow_dist = zuko.flows.autoregressive.MAF(
                 features=num_clusters,
                 context=context_length,
                 transforms=flow_length,
                 hidden_features=hidden_layers,
-                activation=torch.nn.Tanh
+                activation=torch.nn.Tanh,
             )
         case "CNF":
-            cluster_probs_flow_dist = zuko.flows.CNF(
+            cluster_probs_flow_dist = zuko.flows.continuous.CNF(
                 features=num_clusters,
                 context=context_length,
                 hidden_features=hidden_layers,
@@ -98,31 +98,48 @@ def setup_zuko_flow(flow_type: str, num_clusters: int, flow_length: int = 1, con
                 # atol=1e-5, TURN THESE ON FOR MEMORY REDUCTION
                 # rtol=1e-4,
                 exact=False,
+                normalize=True,
             )
         case "GF":
-            cluster_probs_flow_dist = zuko.flows.GF(
+            cluster_probs_flow_dist = zuko.flows.gaussianization.GF(
                 features=num_clusters,
                 context=context_length,
                 transforms=flow_length,
                 components=num_clusters,
                 hidden_features=hidden_layers,
-                activation=torch.nn.Tanh
+                activation=torch.nn.Tanh,
+                normalize=True
             )
-        case "MNN":
-            raise NotImplementedError("This flow isn't supported yet")
+        # case "MNN":
+        #     cluster_probs_flow_dist = zuko.flows.neural.MNN(
+        #         signal=16,
+        #         hidden_features=hidden_layers,
+        #         activation=torch.nn.Tanh,
+        #         normalize=True
+        #     )
         case "NAF":
-            cluster_probs_flow_dist = zuko.flows.NAF(
+            cluster_probs_flow_dist = zuko.flows.neural.NAF(
                 features=num_clusters,
                 context=context_length,
                 transforms=flow_length,
-                hidden_features=hidden_layers,
-                activation=torch.nn.Tanh,
-                signal=16
+                # hidden_features=hidden_layers,
+                # activation=torch.nn.Tanh,
+                signal=64,
+                network={
+                    "hidden_features": hidden_layers,
+                    "activation": torch.nn.Tanh,
+                    "normalize": True
+                }
             )
-        case "UMNN":
-            raise NotImplementedError("This flow isn't supported yet")
+        # case "UMNN":
+        #     cluster_probs_flow_dist = zuko.flows.neural.UMNN(
+        #         signal=16,
+        #         hidden_features=hidden_layers,
+        #         activation=torch.nn.Tanh,
+        #         normalize=True
+        #     )
         case "UNAF":
-            cluster_probs_flow_dist = zuko.flows.UNAF(
+            cluster_probs_flow_dist = zuko.flows.neural.UNAF(
                 features=num_clusters,
                 context=context_length,
                 transforms=flow_length,
@@ -131,11 +148,24 @@ def setup_zuko_flow(flow_type: str, num_clusters: int, flow_length: int = 1, con
                 signal=16
             )
         case "BPF":
-            raise NotImplementedError("This flow isn't supported yet")
+            cluster_probs_flow_dist = zuko.flows.polynomial.BPF(
+                features=num_clusters,
+                context=context_length,
+                degree=16,
+                hidden_features=hidden_layers,
+                activation=torch.nn.Tanh,
+            )
         case "SOSPF":
-            raise NotImplementedError("This flow isn't supported yet")
+            cluster_probs_flow_dist = zuko.flows.polynomial.SOSPF(
+                features=num_clusters,
+                context=context_length,
+                degree=8,
+                polynomials=4,
+                hidden_features=hidden_layers,
+                activation=torch.nn.Tanh,
+            )
         case "NCSF":
-            cluster_probs_flow_dist = zuko.flows.NCSF(
+            cluster_probs_flow_dist = zuko.flows.spline.NCSF(
                 features=num_clusters,
                 context=context_length,
                 hidden_features=hidden_layers,
@@ -143,12 +173,13 @@ def setup_zuko_flow(flow_type: str, num_clusters: int, flow_length: int = 1, con
                 bins=16
             )
         case "NSF":
-            cluster_probs_flow_dist = zuko.flows.NSF(
+            cluster_probs_flow_dist = zuko.flows.spline.NSF(
                 features=num_clusters,
                 context=context_length,
                 hidden_features=hidden_layers,
                 activation=torch.nn.Tanh,
-                bins=16
+                bins=16,
+                # passes=2
             )
 
     # clamping
