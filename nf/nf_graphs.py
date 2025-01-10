@@ -52,9 +52,11 @@ class GCNFlowModel(nn.Module):
         match conv_type:
             case "GCN":
                 self.layers = nn.ModuleList([
-                    GCNModule(in_features, 128, conv_type),
-                    nn.Tanh(),
-                    GCNModule(128, out_features, conv_type)
+                    GCNModule(in_features, 256, conv_type),  # First layer with reduced output size
+                    nn.Tanh(),  # Using ReLU activation for better performance
+                    # GCNModule(256, 256, conv_type),  # Second layer with same output size for deeper representation
+                    # nn.Tanh(),  # Another ReLU activation
+                    GCNModule(256, out_features, conv_type)  # Final layer to output the desired features
                 ])
             case "SGCN":
                 self.layers = nn.ModuleList([
@@ -285,16 +287,26 @@ def train(
 
     def per_param_callable(param_name):
         if param_name == 'cluster_means_q_mean':
-            return {"lr": 0.0001, "betas": (0.9, 0.999)}
+            return {"lr": 0.00005, "betas": (0.9, 0.999)}  # Updated for better generalization
         elif param_name == 'cluster_scales_q_mean':
-            return {"lr": 0.0001, "betas": (0.9, 0.999)}
-        elif "logit" in param_name:
-            return {"lr": config.flows.lr, "betas": (0.9, 0.999), "clip_norm": 1.0}
+            return {"lr": 0.00005, "betas": (0.9, 0.999)}  # Updated for better generalization
         else:
-            return {"lr": config.flows.lr, "betas": (0.9, 0.999)}
+            return {"lr": config.flows.lr, "betas": (0.9, 0.999), "weight_decay": 1e-7}  # Updated for better generalization
 
-    scheduler = Adam(per_param_callable)
+    # Create a scheduler using ClippedAdam with a parameter callable
     scheduler = ClippedAdam(per_param_callable)
+    
+    # Retrieve parameter names and their associated optimizer hyperparameters
+    print("Hyperparameters:")
+    param_store = pyro.get_param_store()
+
+    for param_name in param_store.keys():
+        param_value = param_store[param_name]
+        # Get the optimizer associated with this parameter
+        optim_state = scheduler.optim_objs[param_value.unconstrained()]
+        hyperparams = optim_state["optim_args"]
+        print(f"Parameter: {param_name}")
+        print(f"  lr: {hyperparams['lr']}, betas: {hyperparams['betas']}, weight_decay: {hyperparams.get('weight_decay', 0)}")
 
     # Setup the inference algorithm
     svi = SVI(model, guide, scheduler, loss=TraceMeanField_ELBO(num_particles=config.VI.num_particles, vectorize_particles=True))
@@ -340,7 +352,7 @@ def save_filepath(config):
         f"INIT={config.data.init_method}", 
         f"NEIGHBORSIZE={config.data.neighborhood_size}", 
         f"PRIOR_FLOW_TYPE={config.flows.prior_flow_type}", 
-        f"PRIOR_FLOW_LENGTH={config.flows.prior_flow_length}" if config.flows.posterior_flow_type != 'CNF' else '', 
+        f"PRIOR_FLOW_LENGTH={config.flows.prior_flow_length}" if config.flows.prior_flow_type != 'CNF' else '', 
         f"GCONV={config.flows.gconv_type}", 
         f"POST_FLOW_TYPE={config.flows.posterior_flow_type}", 
         f"POST_FLOW_LENGTH={config.flows.posterior_flow_length}" if config.flows.posterior_flow_type != 'CNF' else '', 
@@ -610,7 +622,7 @@ if __name__ == "__main__":
         # setup the data graph
         positions = torch.tensor(spatial_locations[non_na_mask].to_numpy()).float()
         # edge_index = pyg.nn.knn_graph(positions, k=1+4*config.data.neighborhood_size, loop=True)
-        edge_index = pyg.nn.radius_graph(positions, r=2, loop=True)
+        edge_index = pyg.nn.radius_graph(positions, r=2.5, loop=True)
         
         # Print summary metrics about the graph
         num_nodes = positions.shape[0]

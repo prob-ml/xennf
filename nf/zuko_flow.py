@@ -88,6 +88,7 @@ def setup_zuko_flow(flow_type: str, num_clusters: int, flow_length: int = 1, con
                 transforms=flow_length,
                 hidden_features=hidden_layers,
                 activation=torch.nn.Tanh,
+                # residual=True
             )
         case "CNF":
             cluster_probs_flow_dist = zuko.flows.continuous.CNF(
@@ -95,10 +96,10 @@ def setup_zuko_flow(flow_type: str, num_clusters: int, flow_length: int = 1, con
                 context=context_length,
                 hidden_features=hidden_layers,
                 activation=torch.nn.Tanh,
-                # atol=1e-5, TURN THESE ON FOR MEMORY REDUCTION
+                # atol=1e-5, #TURN THESE UP FOR LOWER MEMORY/COMP COST, DOWN FOR BETTER ACCURACY
                 # rtol=1e-4,
                 exact=False,
-                normalize=True,
+                # normalize=True,
             )
         case "GF":
             cluster_probs_flow_dist = zuko.flows.gaussianization.GF(

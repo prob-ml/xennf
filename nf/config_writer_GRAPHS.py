@@ -3,10 +3,10 @@ import yaml
 import os
 
 prior_flow_type = ["MAF"]
-posterior_flow_type = ["MAF", "NSF"]
+posterior_flow_type = ["CNF"]
 prior_flow_length_by_type = {
     "CNF": [32],  # CNF only needs one "flow length" since it doesn't use one
-    "MAF": [2, 4, 8],
+    "MAF": [1, 3, 7],
     "NSF": [2, 4, 8]
 }
 posterior_flow_length_by_type = {
@@ -16,8 +16,10 @@ posterior_flow_length_by_type = {
 }
 init_method = ["Louvain", "K-Means", "mclust"]
 hidden_layers = [
-    [128, 128],
-    [512, 512]
+    [512, 512, 512],
+    [512, 512, 512, 512],
+    [1024, 1024, 1024],
+    [1024, 512, 256, 128]
 ]
 neighborhood_size = [1]
 graph_conv = ["GCN", "SAGE"]
@@ -90,7 +92,7 @@ for i, combo in enumerate(all_combinations):
         hidden_layers: {hidden_layers}
         num_epochs: 10000
         batch_size: -1
-        patience: 50
+        patience: 125
         lr: 0.00075
     """
 

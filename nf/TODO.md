@@ -14,3 +14,4 @@
 - [x] Allow mclust initialization.
 - [ ] Stack a CNF/MAF together?
 - [ ] Attempt a CNF with wider hidden units instead of deeper?
+- [ ] Way more data, but unempirical prior.
