@@ -731,7 +731,50 @@ if __name__ == "__main__":
         context_length=config.data.data_dimension,
         hidden_layers=config.flows.hidden_layers
     )
- 
+
+    class TransformerHyperNet(nn.Module):
+        def __init__(self, input_dim, out_dim, num_heads=4, hidden_dim=512, num_layers=4, dropout=0.1):
+            super().__init__()
+            
+            # Positional encoding for spatial awareness
+            self.positional_encoding = nn.Sequential(
+                nn.Linear(input_dim, hidden_dim),
+                nn.Tanh()
+            )
+            
+            # Transformer Encoder
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=hidden_dim,  # Hidden size for the transformer
+                nhead=num_heads,     # Number of attention heads
+                dim_feedforward=hidden_dim * 4,  # Feedforward network size
+                dropout=dropout
+            )
+            self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+
+            # Output layer to map back to required dimension
+            self.output_layer = nn.Linear(hidden_dim, out_dim)
+
+        def forward(self, x):
+            # Add positional encoding
+            x = self.positional_encoding(x)
+
+            # Pass through transformer
+            x = self.transformer(x)
+
+            # Map to final output dimension (e.g., num_clusters)
+            return self.output_layer(x)
+
+    transformer_hypernet = TransformerHyperNet(
+        input_dim=cluster_probs_flow_dist.transform.ode[0].weight.shape[1],  # Number of input spatial features
+        out_dim=config.data.num_clusters,
+        num_heads=4,
+        hidden_dim=512,
+        num_layers=4,
+        dropout=0.1
+    )
+
+    cluster_probs_flow_dist.transform.ode = transformer_hypernet
+
     def guide(data):
         
         pyro.module("posterior_flow", cluster_probs_flow_dist)

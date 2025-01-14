@@ -6,7 +6,7 @@ prior_flow_type = ["MAF"]
 posterior_flow_type = ["CNF"]
 prior_flow_length_by_type = {
     "CNF": [32],  # CNF only needs one "flow length" since it doesn't use one
-    "MAF": [1, 3, 7],
+    "MAF": [1, 3, 5],
     "NSF": [2, 4, 8]
 }
 posterior_flow_length_by_type = {
@@ -14,14 +14,12 @@ posterior_flow_length_by_type = {
     "MAF": [16, 32, 64],
     "NSF": [16, 32, 64]
 }
-init_method = ["Louvain", "K-Means", "mclust"]
+init_method = ["K-Means", "mclust"]
 hidden_layers = [
-    [512, 512, 512],
-    [512, 512, 512, 512],
-    [1024, 1024, 1024],
-    [1024, 512, 256, 128]
+    [2048, 1024, 512, 256, 128, 64, 32, 16],
 ]
 neighborhood_size = [1]
+radius_size = [2, 2.25, 2.5, 2.75, 3]
 graph_conv = ["GCN", "SAGE"]
 
 DATASET = "DLPFC"
@@ -41,6 +39,7 @@ for prior_ft in prior_flow_type:
             init_method,
             hidden_layers,
             neighborhood_size,
+            radius_size,
             graph_conv,
         )))
 
@@ -64,7 +63,8 @@ for i, combo in enumerate(all_combinations):
     init_method = combo[4]
     hidden_layers = combo[5]
     neighborhood_size = combo[6]
-    graph_conv = combo[7]
+    radius_size = combo[7]
+    graph_conv = combo[8]
 
     config_yaml = f"""
     data:
@@ -76,6 +76,7 @@ for i, combo in enumerate(all_combinations):
         init_method: {init_method}
         neighborhood_size: {neighborhood_size}
         neighborhood_agg: "mean"
+        radius: {radius_size}
     VI:
         empirical_prior: True
         learn_global_variances: False
@@ -92,7 +93,7 @@ for i, combo in enumerate(all_combinations):
         hidden_layers: {hidden_layers}
         num_epochs: 10000
         batch_size: -1
-        patience: 125
+        patience: 25
         lr: 0.00075
     """
 

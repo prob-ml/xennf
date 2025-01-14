@@ -19,7 +19,3 @@ python nf_graphs.py --config_name=50
 python nf_graphs.py --config_name=53
 python nf_graphs.py --config_name=56
 python nf_graphs.py --config_name=59
-python nf_graphs.py --config_name=62
-python nf_graphs.py --config_name=65
-python nf_graphs.py --config_name=68
-python nf_graphs.py --config_name=71

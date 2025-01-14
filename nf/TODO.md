@@ -1,5 +1,6 @@
 - [ ] Configure strength of prior flow with learnable temperature param.
-- [ ] Investigate proper mu and sigma prior scale values.
+    (This is kinda also controlled by the flexibility of the flow.)
+- [x] Investigate proper mu and sigma prior scale values.
 - [ ] AI Checker
 - [ ] Gumbel Model
 - [ ] Model Clarity Writing
@@ -15,3 +16,5 @@
 - [ ] Stack a CNF/MAF together?
 - [ ] Attempt a CNF with wider hidden units instead of deeper?
 - [ ] Way more data, but unempirical prior.
+- [ ] GIN and GAT implementations.
+- [ ] Convert color schemes to rainbow.
