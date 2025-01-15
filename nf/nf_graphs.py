@@ -41,6 +41,15 @@ from data import prepare_DLPFC_data, prepare_synthetic_data, prepare_Xenium_data
 from zuko_flow import setup_zuko_flow, ZukoToPyro
 from omegaconf import OmegaConf
 
+# Set seeds for all libraries
+seed = 42
+np.random.seed(seed)
+
+# If using PyTorch
+torch.manual_seed(seed)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(seed)
+
 class GCNFlowModel(nn.Module):
     def __init__(self, original_graph, in_features, out_features, conv_type="GCN"):
         super().__init__()
@@ -52,11 +61,11 @@ class GCNFlowModel(nn.Module):
         match conv_type:
             case "GCN":
                 self.layers = nn.ModuleList([
-                    GCNModule(in_features, 256, conv_type),  # First layer with reduced output size
+                    GCNModule(in_features, 512, conv_type),  # First layer with reduced output size
                     nn.Tanh(),  # Using ReLU activation for better performance
-                    # GCNModule(256, 256, conv_type),  # Second layer with same output size for deeper representation
+                    # GCNModule(512, 512, conv_type),  # Second layer with same output size for deeper representation
                     # nn.Tanh(),  # Another ReLU activation
-                    GCNModule(256, out_features, conv_type)  # Final layer to output the desired features
+                    GCNModule(512, out_features, conv_type)  # Final layer to output the desired features
                 ])
             case "SGCN":
                 self.layers = nn.ModuleList([
@@ -64,9 +73,9 @@ class GCNFlowModel(nn.Module):
                 ])
             case "SAGE" | "cuSAGE":
                 self.layers = nn.ModuleList([
-                    GCNModule(in_features, 256, conv_type),
+                    GCNModule(in_features, 512, conv_type),
                     nn.Tanh(),
-                    GCNModule(256, out_features, conv_type)
+                    GCNModule(512, out_features, conv_type)
                 ])
             case "GAT":
                 NUM_HEADS = 8
@@ -77,9 +86,9 @@ class GCNFlowModel(nn.Module):
                 ])
             case "GIN":
                 self.layers = nn.ModuleList([
-                    GCNModule(in_features, 256, conv_type),
+                    GCNModule(in_features, 512, conv_type),
                     nn.Tanh(),
-                    GCNModule(256, out_features, conv_type)
+                    GCNModule(512, out_features, conv_type)
                 ])
             case _:
                 raise NotImplementedError(f"{conv_type} not supported yet.")
@@ -177,20 +186,10 @@ def prepare_data(config):
         gene_data, spatial_locations, original_adata = prepare_DLPFC_data(151673, num_pcs=config.data.num_pcs)
         TRUE_PRIOR_WEIGHTS = None
 
-    # clamping
-    MIN_CONCENTRATION = config.VI.min_concentration
-
     gene_data = StandardScaler().fit_transform(gene_data)
     data = torch.tensor(gene_data).float()
-    num_obs, data_dim = data.shape
 
-    rows = spatial_locations["row"].astype(int)
-    columns = spatial_locations["col"].astype(int)
-
-    num_rows = max(rows) + 1
-    num_cols = max(columns) + 1
-
-    if config.data.init_method !=  "None":
+    if config.data.init_method != "None":
         initial_clusters = custom_cluster_initialization(original_adata, config.data.init_method, K=config.data.num_clusters, num_pcs=config.data.num_pcs, resolution=config.data.resolution, dataset=config.data.dataset, neighborhood_size=config.data.neighborhood_size)
 
         if config.data.dataset == "SYNTHETIC":
@@ -226,8 +225,8 @@ def prepare_data(config):
 
     empirical_prior_means = torch.randn(config.data.num_clusters, gene_data.shape[1])
     empirical_prior_scales = 1.0 + torch.abs(torch.randn(config.data.num_clusters, gene_data.shape[1]))
-    assert sum(np.unique(initial_clusters) >= 0) == config.data.num_clusters, "K doesn't match initial number of unique detected clusters."
     if config.VI.empirical_prior:
+        assert sum(np.unique(initial_clusters) >= 0) == config.data.num_clusters, "K doesn't match initial number of unique detected clusters."
         for i in range(config.data.num_clusters):
             cluster_data = gene_data[initial_clusters == i]
             if len(cluster_data) > 1:  # Check if there are any elements in the cluster_data
@@ -235,61 +234,8 @@ def prepare_data(config):
                 empirical_prior_scales[i] = torch.tensor(cluster_data.std(axis=0))
             else:
                 raise ValueError("Not all clusters have a data point.")
-    cluster_probs_prior = torch.zeros((initial_clusters.shape[0], config.data.num_clusters))
-    cluster_probs_prior[torch.arange(initial_clusters.shape[0]), initial_clusters] = 1.
 
-    locations_tensor = torch.tensor(spatial_locations.to_numpy())
-
-    # Compute the number of elements in each dimension
-    num_spots = cluster_probs_prior.shape[0]
-
-    # Initialize an empty tensor for spatial concentration priors
-    spatial_cluster_probs_prior = torch.zeros_like(cluster_probs_prior, dtype=torch.float64)
-
-    spot_locations = KDTree(locations_tensor.cpu())  # Ensure this tensor is in host memory
-    neighboring_spot_indexes = spot_locations.query_ball_point(locations_tensor.cpu(), r=config.data.neighborhood_size, p=1, workers=8)
-
-    # Iterate over each spot
-    for i in tqdm(range(num_spots)):
-
-        # Select priors in the neighborhood
-        priors_in_neighborhood = cluster_probs_prior[neighboring_spot_indexes[i]]
-
-        # Compute the sum or mean, or apply a custom weighting function
-        if config.data.neighborhood_agg == "mean":
-            neighborhood_priors = priors_in_neighborhood.mean(dim=0)
-        else:
-            locations = original_adata.xenium_spot_data.obs[["x_location", "y_location", "z_location"]].values
-            neighboring_locations = locations[neighboring_spot_indexes[i]].astype(float)
-            distances = torch.tensor(np.linalg.norm(neighboring_locations - locations[i], axis=1))
-            def distance_weighting(x):
-                weight = 1/(1 + x/1)
-                # print(weight)
-                return weight / weight.sum()
-            neighborhood_priors = (priors_in_neighborhood * distance_weighting(distances).reshape(-1, 1)).sum(dim=0)
-        # Update the cluster probabilities
-        spatial_cluster_probs_prior[i] += neighborhood_priors
-
-    spatial_cluster_probs_prior = spatial_cluster_probs_prior.clamp(MIN_CONCENTRATION)
-    sample_for_assignment_options = [True, False]
-
-    for sample_for_assignment in sample_for_assignment_options:
-
-        if sample_for_assignment:
-            cluster_assignments_prior_TRUE = pyro.sample("cluster_assignments", dist.Categorical(spatial_cluster_probs_prior).expand_by([config.VI.num_prior_samples])).detach().mode(dim=0).values
-            cluster_assignments_prior = cluster_assignments_prior_TRUE
-        else:
-            cluster_assignments_prior_FALSE = spatial_cluster_probs_prior.argmax(dim=1)
-            cluster_assignments_prior = cluster_assignments_prior_FALSE
-
-        # Load the data
-        data = torch.tensor(gene_data).float()
-
-        cluster_grid_PRIOR = torch.zeros((num_rows, num_cols), dtype=torch.long)
-
-        cluster_grid_PRIOR[rows, columns] = cluster_assignments_prior + 1
-
-    return data, spatial_locations, original_adata, spatial_cluster_probs_prior, empirical_prior_means, empirical_prior_scales, TRUE_PRIOR_WEIGHTS, cluster_grid_PRIOR
+    return data, spatial_locations, original_adata, empirical_prior_means, empirical_prior_scales, TRUE_PRIOR_WEIGHTS
 
 def train(
         model, 
@@ -304,11 +250,11 @@ def train(
 
     def per_param_callable(param_name):
         if param_name == 'cluster_means_q_mean':
-            return {"lr": 0.0005, "betas": (0.9, 0.999)}
+            return dict(config.flows.lr.cluster_means_q_mean)
         elif param_name == 'cluster_scales_q_mean':
-            return {"lr": 0.0005, "betas": (0.9, 0.999)}
+            return dict(config.flows.lr.cluster_scales_q_mean)
         else:
-            return {"lr": config.flows.lr, "betas": (0.9, 0.999), "weight_decay": 1e-6}
+            return dict(config.flows.lr.default)
 
     # Create a scheduler using ClippedAdam with a parameter callable
     scheduler = ClippedAdam(per_param_callable)
@@ -366,7 +312,7 @@ def save_filepath(config):
         "results", config.data.dataset, "XenNF", 
         f"DATA_DIM={config.data.data_dimension}", 
         f"K={config.data.num_clusters}", 
-        f"INIT={config.data.init_method}", 
+        f"INIT={config.data.init_method}",
         f"NEIGHBORSIZE={config.data.neighborhood_size}" if config.data.dataset == "SYNTHETIC" else f"RADIUS={config.data.radius}", 
         f"PRIOR_FLOW_TYPE={config.flows.prior_flow_type}", 
         f"PRIOR_FLOW_LENGTH={config.flows.prior_flow_length}" if config.flows.prior_flow_type != 'CNF' else '', 
@@ -417,7 +363,6 @@ def posterior_eval(
         spatial_locations,  
         original_adata,
         config,
-        spatial_cluster_probs_prior, 
         true_prior_weights=None,
         loading_trained_model=False
     ):
@@ -607,17 +552,15 @@ if __name__ == "__main__":
     torch.set_printoptions(sci_mode=False)
     expected_total_param_dim = 2 # K x D
     warnings.filterwarnings("ignore")
-    config = OmegaConf.load(f'config/config_DLPFC/config{args.config_name}.yaml')
+    config = OmegaConf.load(f'config/config_SYNTHETIC/config{args.config_name}.yaml')
 
     (
         data, 
         spatial_locations, 
-        original_adata, 
-        spatial_cluster_probs_prior, 
+        original_adata,  
         empirical_prior_means, 
         empirical_prior_scales, 
-        true_prior_weights, 
-        cluster_states
+        true_prior_weights
     ) = prepare_data(config)
 
     print(empirical_prior_means, empirical_prior_scales)
@@ -739,8 +682,8 @@ if __name__ == "__main__":
 
         with pyro.plate("clusters", config.data.num_clusters):
             # Global variational parameters for cluster means and scales
-            cluster_means_q_mean = pyro.param("cluster_means_q_mean", empirical_prior_means + torch.randn_like(empirical_prior_means) * 0.05)
-            cluster_scales_q_mean = pyro.param("cluster_scales_q_mean", empirical_prior_scales + torch.randn_like(empirical_prior_scales) * 0.01, constraint=dist.constraints.positive)
+            cluster_means_q_mean = pyro.param("cluster_means_q_mean", empirical_prior_means + torch.randn_like(empirical_prior_means) * 0.15)
+            cluster_scales_q_mean = pyro.param("cluster_scales_q_mean", empirical_prior_scales + torch.randn_like(empirical_prior_scales) * 0.03, constraint=dist.constraints.positive)
             if config.VI.learn_global_variances:
                 cluster_means_q_scale = pyro.param("cluster_means_q_scale", torch.ones_like(empirical_prior_means) * 1.0, constraint=dist.constraints.positive)
                 cluster_scales_q_scale = pyro.param("cluster_scales_q_scale", torch.ones_like(empirical_prior_scales) * 0.25, constraint=dist.constraints.positive)
@@ -753,7 +696,9 @@ if __name__ == "__main__":
             cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data, constant=0.0)).to_event(1))
         else:
             cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
-        # print("GUIDE ", cluster_logits.shape)
+        # print(cluster_means_q_mean - empirical_prior_means)
+        print(f"Mean Norm: {torch.norm(cluster_means_q_mean - empirical_prior_means)}")
+        print(f"Scale Norm: {torch.norm(cluster_scales_q_mean - empirical_prior_scales)}")
 
     model_save_path = os.path.join(
         "/nfs/turbo/lsa-regier/scratch", 
@@ -782,4 +727,4 @@ if __name__ == "__main__":
         model_file = os.path.join(model_save_path, 'model.save')
         pyro.get_param_store().save(model_file)
 
-    posterior_eval(data, spatial_locations, original_adata, config, cluster_states, true_prior_weights)
+    posterior_eval(data, spatial_locations, original_adata, config, true_prior_weights)

@@ -348,7 +348,7 @@ class XeniumCluster:
     def Hierarchical(
             self,
             data: ad.AnnData,
-            num_clusters: int = 3,
+            K: int = 3,
             groupby: List[str] = ["spot_number"],
             embedding: str = "umap",
             include_spatial = True,
@@ -399,7 +399,7 @@ class XeniumCluster:
             linkage_matrix = data.uns[key_added]['linkage']
 
         # Form clusters from the dendrogram
-        cluster_labels = sch.fcluster(linkage_matrix, t=num_clusters, criterion='maxclust') - 1
+        cluster_labels = sch.fcluster(linkage_matrix, t=K, criterion='maxclust') - 1
 
         # Assign cluster labels to observations
         if self.dataset_name == "DLPFC":
@@ -421,7 +421,7 @@ class XeniumCluster:
         # # plot embedding
         # _ = plot_embedding(data, key_added, embedding, **kwargs)
 
-        self.target_dir_setter("Hierarchical", K=num_clusters)
+        self.target_dir_setter("Hierarchical", K=K)
         os.makedirs(self.target_dir, exist_ok=True)
             
         # Extracting row, col, and cluster values from the dataframe
@@ -483,7 +483,7 @@ class XeniumCluster:
         plt.title(f'Cluster Assignment with Hierarchical')
 
         plt.savefig(
-            f"{self.target_dir}/clusters_K={num_clusters}.png"
+            f"{self.target_dir}/clusters_K={K}.png"
         )
 
         return data.obs[key_added].values.astype(int)

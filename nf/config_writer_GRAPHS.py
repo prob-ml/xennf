@@ -1,9 +1,10 @@
 import itertools
 import yaml
 import os
+import shutil
 
-use_empirical_params = [False, True]
-prior_flow_type = ["MAF"]
+use_empirical_params = [True]
+prior_flow_type = ["MAF", "CNF"]
 posterior_flow_type = ["CNF"]
 prior_flow_length_by_type = {
     "CNF": [32],  # CNF only needs one "flow length" since it doesn't use one
@@ -15,17 +16,19 @@ posterior_flow_length_by_type = {
     "MAF": [16, 32, 64],
     "NSF": [16, 32, 64]
 }
-init_method = ["K-Means", "mclust"]
+init_method = ["K-Means", "mclust", "Louvain"]
 hidden_layers = [
     [2048, 1024, 512, 256, 128, 64, 32, 16],
 ]
-neighborhood_size = [1]
+neighborhood_size = [1, 2]
 radius_size = [2, 2.25, 2.5, 2.75, 3]
 graph_conv = ["GCN", "SAGE"]
 
-DATASET = "DLPFC"
+DATASET = "SYNTHETIC"
 config_filepath = f"config/config_{DATASET}"
 
+if os.path.exists(config_filepath):
+    shutil.rmtree(config_filepath)
 os.makedirs(config_filepath, exist_ok=True)
 
 # Generate all possible combinations
@@ -96,17 +99,23 @@ for i, combo in enumerate(all_combinations):
         hidden_layers: {hidden_layers}
         num_epochs: 10000
         batch_size: -1
-        patience: 25
+        patience: {25 if use_empirical_params else 75}
         lr: 
           cluster_means_q_mean: 
             lr: {0.0005 if use_empirical_params else 0.005}
-            betas: (0.9, 0.999)
+            betas: 
+              - 0.9
+              - 0.999
           cluster_scales_q_mean: 
             lr: {0.0001 if use_empirical_params else 0.001}
-            betas: (0.9, 0.999)
+            betas: 
+              - 0.9
+              - 0.999
           default: 
             lr: 0.001
-            betas: (0.9, 0.999)
+            betas:
+              - 0.9
+              - 0.999
             weight_decay: 1e-6
     """
 
