@@ -190,41 +190,42 @@ def prepare_data(config):
     num_rows = max(rows) + 1
     num_cols = max(columns) + 1
 
-    initial_clusters = custom_cluster_initialization(original_adata, config.data.init_method, K=config.data.num_clusters, num_pcs=config.data.num_pcs, resolution=config.data.resolution, dataset=config.data.dataset, neighborhood_size=config.data.neighborhood_size)
+    if config.data.init_method !=  "None":
+        initial_clusters = custom_cluster_initialization(original_adata, config.data.init_method, K=config.data.num_clusters, num_pcs=config.data.num_pcs, resolution=config.data.resolution, dataset=config.data.dataset, neighborhood_size=config.data.neighborhood_size)
 
-    if config.data.dataset == "SYNTHETIC":
-        ari = ARI(initial_clusters, TRUE_PRIOR_WEIGHTS.argmax(axis=-1))
-        nmi = NMI(initial_clusters, TRUE_PRIOR_WEIGHTS.argmax(axis=-1))
-        cluster_metrics = {
-            "ARI": round(ari, 3),
-            "NMI": round(nmi, 3)
-        }
+        if config.data.dataset == "SYNTHETIC":
+            ari = ARI(initial_clusters, TRUE_PRIOR_WEIGHTS.argmax(axis=-1))
+            nmi = NMI(initial_clusters, TRUE_PRIOR_WEIGHTS.argmax(axis=-1))
+            cluster_metrics = {
+                "ARI": round(ari, 3),
+                "NMI": round(nmi, 3)
+            }
 
-        with open(f"{original_adata.target_dir}/cluster_metrics.json", 'w') as fp:
-            json.dump(cluster_metrics, fp)
+            with open(f"{original_adata.target_dir}/cluster_metrics.json", 'w') as fp:
+                json.dump(cluster_metrics, fp)
 
-    elif config.data.dataset == "DLPFC":
-        # Create a DataFrame for easier handling
-        cluster_data = pd.DataFrame({
-            'ClusterAssignments': initial_clusters,
-            'Region': original_adata.xenium_spot_data.obs["Region"]
-        })
+        elif config.data.dataset == "DLPFC":
+            # Create a DataFrame for easier handling
+            cluster_data = pd.DataFrame({
+                'ClusterAssignments': initial_clusters,
+                'Region': original_adata.xenium_spot_data.obs["Region"]
+            })
 
-        # Drop rows where 'Region' is NaN
-        filtered_data = cluster_data.dropna(subset=['Region'])
-        ari = ARI(filtered_data['ClusterAssignments'], filtered_data['Region'])
-        nmi = NMI(filtered_data['ClusterAssignments'], filtered_data['Region'])
+            # Drop rows where 'Region' is NaN
+            filtered_data = cluster_data.dropna(subset=['Region'])
+            ari = ARI(filtered_data['ClusterAssignments'], filtered_data['Region'])
+            nmi = NMI(filtered_data['ClusterAssignments'], filtered_data['Region'])
 
-        cluster_metrics = {
-            "ARI": round(ari, 3),
-            "NMI": round(nmi, 3)
-        }
+            cluster_metrics = {
+                "ARI": round(ari, 3),
+                "NMI": round(nmi, 3)
+            }
 
-        with open(f"{original_adata.target_dir}/cluster_metrics.json", 'w') as fp:
-            json.dump(cluster_metrics, fp)
+            with open(f"{original_adata.target_dir}/cluster_metrics.json", 'w') as fp:
+                json.dump(cluster_metrics, fp)
 
-    empirical_prior_means = torch.zeros(config.data.num_clusters, gene_data.shape[1])
-    empirical_prior_scales = torch.ones(config.data.num_clusters, gene_data.shape[1])
+    empirical_prior_means = torch.randn(config.data.num_clusters, gene_data.shape[1])
+    empirical_prior_scales = 1.0 + torch.abs(torch.randn(config.data.num_clusters, gene_data.shape[1]))
     assert sum(np.unique(initial_clusters) >= 0) == config.data.num_clusters, "K doesn't match initial number of unique detected clusters."
     if config.VI.empirical_prior:
         for i in range(config.data.num_clusters):
@@ -303,11 +304,11 @@ def train(
 
     def per_param_callable(param_name):
         if param_name == 'cluster_means_q_mean':
-            return {"lr": 0.00005, "betas": (0.9, 0.999)}  # Updated for better generalization
+            return {"lr": 0.0005, "betas": (0.9, 0.999)}
         elif param_name == 'cluster_scales_q_mean':
-            return {"lr": 0.00005, "betas": (0.9, 0.999)}  # Updated for better generalization
+            return {"lr": 0.0005, "betas": (0.9, 0.999)}
         else:
-            return {"lr": config.flows.lr, "betas": (0.9, 0.999), "weight_decay": 1e-7}  # Updated for better generalization
+            return {"lr": config.flows.lr, "betas": (0.9, 0.999), "weight_decay": 1e-6}
 
     # Create a scheduler using ClippedAdam with a parameter callable
     scheduler = ClippedAdam(per_param_callable)
@@ -394,7 +395,7 @@ def edit_flow_nn(config, flow, graph, graph_conv="GCN"):
                 conv_type=graph_conv,
             )
 
-            flow.transform.transforms.insert(0, copy.deepcopy(flow.transform.transforms[0]))
+            # flow.transform.transforms.insert(0, copy.deepcopy(flow.transform.transforms[0]))
             flow.transform.transforms[0].hyper = network
         case zuko.flows.spline.NSF:
             network = GCNFlowModel(
@@ -461,14 +462,14 @@ def posterior_eval(
                 cluster_grid[rows, columns] = cluster_assignments_posterior + 1
 
                 if config.data.dataset == "SYNTHETIC":
-                    colormap = plt.cm.get_cmap('viridis', config.data.num_clusters + 1)
+                    colormap = plt.cm.get_cmap('rainbow', config.data.num_clusters + 1)
                 elif config.data.dataset == "DLPFC":
                     colors = plt.cm.get_cmap('rainbow', config.data.num_clusters)
                     grey_color = [0.5, 0.5, 0.5, 1]  # Medium gray for unused cluster
                     colormap_colors = np.vstack((grey_color, colors(np.linspace(0, 1, config.data.num_clusters))))
                     colormap = ListedColormap(colormap_colors)
                 else:
-                    colors = plt.cm.get_cmap('viridis', config.data.num_clusters + 1)
+                    colors = plt.cm.get_cmap('rainbow', config.data.num_clusters + 1)
                     colormap_colors = np.vstack(([[1, 1, 1, 1]], colors(np.linspace(0, 1, config.data.num_clusters))))
                     colormap = ListedColormap(colormap_colors)
 

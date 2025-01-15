@@ -284,7 +284,7 @@ def prepare_data(config):
 
         cluster_grid_PRIOR[rows, columns] = cluster_assignments_prior + 1
 
-        colors = plt.cm.get_cmap('viridis', config.data.num_clusters)
+        colors = plt.cm.get_cmap('rainbow', config.data.num_clusters)
 
         plt.figure(figsize=(6, 6))
         plt.imshow(cluster_grid_PRIOR.cpu(), cmap=colors, interpolation='nearest', origin='lower')
@@ -393,7 +393,7 @@ def posterior_eval(
 
                 cluster_grid[rows, columns] = cluster_assignments_posterior + 1
 
-                colors = plt.cm.get_cmap('viridis', config.data.num_clusters + 1)
+                colors = plt.cm.get_cmap('rainbow', config.data.num_clusters + 1)
 
                 plt.figure(figsize=(6, 6))
                 plt.imshow(cluster_grid.cpu(), cmap=colors, interpolation='nearest', origin='lower')

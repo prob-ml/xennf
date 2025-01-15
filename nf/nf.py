@@ -383,7 +383,7 @@ for sample_for_assignment in sample_for_assignment_options:
 
     cluster_grid_PRIOR[rows, columns] = cluster_assignments_prior + 1
 
-    colors = plt.cm.get_cmap('viridis', num_clusters)
+    colors = plt.cm.get_cmap('rainbow', num_clusters)
 
     plt.figure(figsize=(6, 6))
     plt.imshow(cluster_grid_PRIOR.cpu(), cmap=colors, interpolation='nearest', origin='lower')
@@ -734,7 +734,7 @@ cluster_grid = torch.zeros((num_rows, num_cols), dtype=torch.long)
 
 cluster_grid[rows, columns] = cluster_assignments_posterior + 1
 
-colors = plt.cm.get_cmap('viridis', num_clusters)
+colors = plt.cm.get_cmap('rainbow', num_clusters)
 
 plt.figure(figsize=(6, 6))
 plt.imshow(cluster_grid.cpu(), cmap=colors, interpolation='nearest', origin='lower')

@@ -404,18 +404,18 @@ def posterior_eval(
                 cluster_grid[rows, columns] = cluster_assignments_posterior + 1
 
                 if config.data.dataset == "SYNTHETIC":
-                    colormap = plt.cm.get_cmap('viridis', config.data.num_clusters + 1)
+                    colormap = plt.cm.get_cmap('rainbow', config.data.num_clusters + 1)
                 elif config.data.dataset == "DLPFC":
-                    colors = plt.cm.get_cmap('viridis', config.data.num_clusters)
+                    colors = plt.cm.get_cmap('rainbow', config.data.num_clusters)
                     grey_color = [0.5, 0.5, 0.5, 1]  # Medium gray for unused cluster
                     colormap_colors = np.vstack((grey_color, colors(np.linspace(0, 1, config.data.num_clusters-1))))
                     colormap = ListedColormap(colormap_colors)
                 else:
-                    colors = plt.cm.get_cmap('viridis', config.data.num_clusters + 1)
+                    colors = plt.cm.get_cmap('rainbow', config.data.num_clusters + 1)
                     colormap_colors = np.vstack(([[1, 1, 1, 1]], colors(np.linspace(0, 1, config.data.num_clusters))))
                     colormap = ListedColormap(colormap_colors)
 
-                colors = plt.cm.get_cmap('viridis', config.data.num_clusters + 1)
+                colors = plt.cm.get_cmap('rainbow', config.data.num_clusters + 1)
 
                 plt.figure(figsize=(6, 6))
                 if config.data.dataset == "DLPFC":

@@ -2,6 +2,7 @@ import itertools
 import yaml
 import os
 
+use_empirical_params = [False, True]
 prior_flow_type = ["MAF"]
 posterior_flow_type = ["CNF"]
 prior_flow_length_by_type = {
@@ -41,6 +42,7 @@ for prior_ft in prior_flow_type:
             neighborhood_size,
             radius_size,
             graph_conv,
+            use_empirical_params
         )))
 
 def get_resolution(dataset, init_method, data_dimension=5, num_clusters=7):
@@ -65,6 +67,7 @@ for i, combo in enumerate(all_combinations):
     neighborhood_size = combo[6]
     radius_size = combo[7]
     graph_conv = combo[8]
+    use_empirical_params = combo[9]
 
     config_yaml = f"""
     data:
@@ -73,12 +76,12 @@ for i, combo in enumerate(all_combinations):
         num_clusters: 7
         resolution: {get_resolution(DATASET, init_method)}
         num_pcs: {8 if DATASET == "DLPFC" else 5}
-        init_method: {init_method}
+        init_method: {init_method if  use_empirical_params else "None"}
         neighborhood_size: {neighborhood_size}
         neighborhood_agg: "mean"
         radius: {radius_size}
     VI:
-        empirical_prior: True
+        empirical_prior: {use_empirical_params}
         learn_global_variances: False
         min_concentration: 0.001
         num_prior_samples: 1000
@@ -94,7 +97,17 @@ for i, combo in enumerate(all_combinations):
         num_epochs: 10000
         batch_size: -1
         patience: 25
-        lr: 0.00075
+        lr: 
+          cluster_means_q_mean: 
+            lr: {0.0005 if use_empirical_params else 0.005}
+            betas: (0.9, 0.999)
+          cluster_scales_q_mean: 
+            lr: {0.0001 if use_empirical_params else 0.001}
+            betas: (0.9, 0.999)
+          default: 
+            lr: 0.001
+            betas: (0.9, 0.999)
+            weight_decay: 1e-6
     """
 
     config_file = yaml.safe_load(config_yaml)

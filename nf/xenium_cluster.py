@@ -16,6 +16,8 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
 from mclustpy import mclustpy
 
+from copy import deepcopy
+
 class XeniumCluster:
 
     # TO DO
@@ -193,14 +195,14 @@ class XeniumCluster:
             cluster_grid[rows, cols] = torch.tensor(clusters, dtype=torch.int) + 1
 
             if self.dataset_name == "SYNTHETIC":
-                colormap = plt.cm.get_cmap('viridis', num_clusters)
+                colormap = plt.cm.get_cmap('rainbow', num_clusters)
             elif self.dataset_name == "DLPFC":
-                colors = plt.cm.get_cmap('viridis', num_clusters)
+                colors = plt.cm.get_cmap('rainbow', num_clusters)
                 grey_color = [0.5, 0.5, 0.5, 1]  # Medium gray for unused cluster
                 colormap_colors = np.vstack((grey_color, colors(np.linspace(0, 1, num_clusters-1))))
                 colormap = ListedColormap(colormap_colors)
             else:
-                colors = plt.cm.get_cmap('viridis', num_clusters + 1)
+                colors = plt.cm.get_cmap('rainbow', num_clusters + 1)
                 colormap_colors = np.vstack(([[1, 1, 1, 1]], colors(np.linspace(0, 1, num_clusters))))
                 colormap = ListedColormap(colormap_colors)
 
@@ -293,14 +295,14 @@ class XeniumCluster:
             cluster_grid[rows, cols] = torch.tensor(clusters, dtype=torch.int) + 1
 
             if self.dataset_name == "SYNTHETIC":
-                colormap = plt.cm.get_cmap('viridis', num_clusters)
+                colormap = plt.cm.get_cmap('rainbow', num_clusters)
             elif self.dataset_name == "DLPFC":
-                colors = plt.cm.get_cmap('viridis', num_clusters)
+                colors = plt.cm.get_cmap('rainbow', num_clusters)
                 grey_color = [0.5, 0.5, 0.5, 1]  # Medium gray for unused cluster
                 colormap_colors = np.vstack((grey_color, colors(np.linspace(0, 1, num_clusters-1))))
                 colormap = ListedColormap(colormap_colors)
             else:
-                colors = plt.cm.get_cmap('viridis', num_clusters + 1)
+                colors = plt.cm.get_cmap('rainbow', num_clusters + 1)
                 colormap_colors = np.vstack(([[1, 1, 1, 1]], colors(np.linspace(0, 1, num_clusters))))
                 colormap = ListedColormap(colormap_colors)
 
@@ -356,6 +358,11 @@ class XeniumCluster:
 
         key_added = f'dendrogram_{groupby}'
 
+        if self.dataset_name == "DLPFC":
+            data_original = deepcopy(data)
+            non_na_mask = ~data.obs["Region"].isna()
+            data = data[non_na_mask]
+
         if use_pca:
             try:
                 init_data = data.obsm["X_pca"]
@@ -392,10 +399,18 @@ class XeniumCluster:
             linkage_matrix = data.uns[key_added]['linkage']
 
         # Form clusters from the dendrogram
-        cluster_labels = sch.fcluster(linkage_matrix, t=num_clusters, criterion='maxclust')
+        cluster_labels = sch.fcluster(linkage_matrix, t=num_clusters, criterion='maxclust') - 1
 
         # Assign cluster labels to observations
-        data.obs[key_added] = cluster_labels
+        if self.dataset_name == "DLPFC":
+            data_original.obs[key_added] = -1
+            data_original.obs.loc[non_na_mask, key_added] = cluster_labels
+            data = data_original
+
+        else:
+            data.obs[key_added] = cluster_labels
+        print(np.unique(data.obs[key_added]))
+
 
         # plot dendrogram
         # sc.pl.dendrogram(data, groupby=groupby)
@@ -423,22 +438,55 @@ class XeniumCluster:
         cluster_grid[rows, cols] = torch.tensor(clusters, dtype=torch.int)
 
         if self.dataset_name == "SYNTHETIC":
-            colormap = plt.cm.get_cmap('viridis', num_clusters + 1)
+            colormap = plt.cm.get_cmap('rainbow', num_clusters)
+        elif self.dataset_name == "DLPFC":
+            colors = plt.cm.get_cmap('rainbow', num_clusters)
+            grey_color = [0.5, 0.5, 0.5, 1]  # Medium gray for unused cluster
+            colormap_colors = np.vstack((grey_color, colors(np.linspace(0, 1, num_clusters-1))))
+            colormap = ListedColormap(colormap_colors)
         else:
-            colors = plt.cm.get_cmap('viridis', num_clusters + 1)
+            colors = plt.cm.get_cmap('rainbow', num_clusters + 1)
             colormap_colors = np.vstack(([[1, 1, 1, 1]], colors(np.linspace(0, 1, num_clusters))))
             colormap = ListedColormap(colormap_colors)
 
         plt.figure(figsize=(6, 6))
-        plt.imshow(cluster_grid.cpu(), cmap=colormap, interpolation='nearest', origin='lower')
-        plt.colorbar(ticks=range(num_clusters + 1), label='Cluster Values')
+        if self.dataset_name == "DLPFC":
+
+            rows, cols, clusters = rows.cpu(), cols.cpu(), clusters.cpu()
+
+            # Create mapping between region names and integer codes
+            region_to_int = {name: code + 1 for code, name in enumerate(data.obs["Region"].cat.categories)}
+            int_to_region = {code + 1: name for code, name in enumerate(data.obs["Region"].cat.categories)}
+
+            # Scatter plot
+            plt.scatter(cols, rows, c=clusters+1, cmap=colormap, marker='h', s=12)#, edgecolors='white')
+
+            # Calculate padding for the axis limits
+            x_padding = (cols.max() - cols.min()) * 0.02  # 2% padding
+            y_padding = (rows.max() - rows.min()) * 0.02        # 2% padding
+
+            # Set axis limits with padding
+            plt.xlim(cols.min() - x_padding, cols.max() + x_padding)
+            plt.ylim(rows.min() - y_padding, rows.max() + y_padding)
+
+            # Force square appearance by stretching the y-axis
+            plt.gca().set_aspect((cols.max() - cols.min() + 2 * x_padding) / 
+                                (rows.max() - rows.min() + 2 * y_padding))  # Adjust for padded ranges
+            plt.gca().invert_yaxis()  # Maintain spatial orientation
+            # Add colorbar and title
+            plt.colorbar(ticks=range(num_clusters), label="True Label").set_ticklabels(["NA"] + list(int_to_region.values()))
+            plt.tight_layout()  # Minimize padding around the plot
+        else:
+
+            plt.imshow(cluster_grid.cpu(), cmap=colormap, interpolation='nearest', origin='lower')
+            plt.colorbar(ticks=range(num_clusters + 1), label='Cluster Values')
         plt.title(f'Cluster Assignment with Hierarchical')
 
         plt.savefig(
             f"{self.target_dir}/clusters_K={num_clusters}.png"
         )
 
-        return data.obs[key_added].values.astype(int) - 1
+        return data.obs[key_added].values.astype(int)
 
     def KMeans(
             self,
@@ -504,14 +552,14 @@ class XeniumCluster:
             cluster_grid[rows, cols] = torch.tensor(clusters, dtype=torch.int) + 1
 
             if self.dataset_name == "SYNTHETIC":
-                colormap = plt.cm.get_cmap('viridis', num_clusters)
+                colormap = plt.cm.get_cmap('rainbow', num_clusters)
             elif self.dataset_name == "DLPFC":
-                colors = plt.cm.get_cmap('viridis', num_clusters)
+                colors = plt.cm.get_cmap('rainbow', num_clusters)
                 grey_color = [0.5, 0.5, 0.5, 1]  # Medium gray for unused cluster
                 colormap_colors = np.vstack((grey_color, colors(np.linspace(0, 1, num_clusters-1))))
                 colormap = ListedColormap(colormap_colors)
             else:
-                colors = plt.cm.get_cmap('viridis', num_clusters + 1)
+                colors = plt.cm.get_cmap('rainbow', num_clusters + 1)
                 colormap_colors = np.vstack(([[1, 1, 1, 1]], colors(np.linspace(0, 1, num_clusters))))
                 colormap = ListedColormap(colormap_colors)
 
@@ -597,10 +645,10 @@ class XeniumCluster:
 
             if self.dataset_name == "SYNTHETIC":
                 cluster_grid[rows, cols] = torch.tensor(clusters, dtype=torch.int)
-                colormap = plt.cm.get_cmap('viridis', num_clusters)
+                colormap = plt.cm.get_cmap('rainbow', num_clusters)
             else:
                 cluster_grid[rows, cols] = torch.tensor(clusters, dtype=torch.int) + 1
-                colors = plt.cm.get_cmap('viridis', num_clusters + 1)
+                colors = plt.cm.get_cmap('rainbow', num_clusters + 1)
                 colormap_colors = np.vstack(([[1, 1, 1, 1]], colors(np.linspace(0, 1, num_clusters))))
                 colormap = ListedColormap(colormap_colors)
 
@@ -647,19 +695,26 @@ class XeniumCluster:
 
         if self.dataset_name == "DLPFC":
             non_na_mask = ~data.obs["Region"].isna()
+            try:
+                np.savetxt(temp_dir, data[non_na_mask].obsm["X_pca"], delimiter=",")
+            except KeyError:
+                raise KeyError("PCA is required for this model to work.")
+        else:
+            try:
+                np.savetxt(temp_dir, data.obsm["X_pca"], delimiter=",")
+            except KeyError:
+                raise KeyError("PCA is required for this model to work.")
 
-        try:
-            np.savetxt(temp_dir, data.obsm["X_pca"], delimiter=",")
-        except KeyError:
-            raise KeyError("PCA is required for this model to work.")
         self.target_dir_setter("mclust", num_pcs=data.obsm['X_pca'].shape[1], K=G)
         num_output_clusters = run_r_script("mclust.R", temp_dir, f"{G}", f"{data.obsm['X_pca'].shape[1]}", f"{self.SPOT_SIZE}", self.dataset_name, self.target_dir)
 
         mclust_clusters = pd.read_csv(f"{self.target_dir}/clusters_K={G}.csv", index_col=0)
 
+        print(mclust_clusters.shape)
+
         if self.dataset_name == "DLPFC":
             data.obs["cluster"] = -1
-            data.obs["cluster"][non_na_mask] = np.array(mclust_clusters["mclust cluster"])
+            data.obs.loc[non_na_mask, "cluster"] = np.array(mclust_clusters["mclust cluster"])
         else:
             data.obs["cluster"] = np.array(mclust_clusters["mclust cluster"])
     
@@ -676,14 +731,14 @@ class XeniumCluster:
         cluster_grid[rows, cols] = torch.tensor(clusters, dtype=torch.int) + 1
 
         if self.dataset_name == "SYNTHETIC":
-            colormap = plt.cm.get_cmap('viridis', num_clusters)
+            colormap = plt.cm.get_cmap('rainbow', num_clusters)
         elif self.dataset_name == "DLPFC":
-            colors = plt.cm.get_cmap('viridis', num_clusters)
+            colors = plt.cm.get_cmap('rainbow', num_clusters)
             grey_color = [0.5, 0.5, 0.5, 1]  # Medium gray for unused cluster
             colormap_colors = np.vstack((grey_color, colors(np.linspace(0, 1, num_clusters-1))))
             colormap = ListedColormap(colormap_colors)
         else:
-            colors = plt.cm.get_cmap('viridis', num_clusters + 1)
+            colors = plt.cm.get_cmap('rainbow', num_clusters + 1)
             colormap_colors = np.vstack(([[1, 1, 1, 1]], colors(np.linspace(0, 1, num_clusters))))
             colormap = ListedColormap(colormap_colors)
 
