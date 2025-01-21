@@ -36,8 +36,8 @@ all_combinations = []
 for prior_ft in prior_flow_type:
     for posterior_ft in posterior_flow_type:
         all_combinations.extend(list(itertools.product(
-            (prior_ft,),  # Wrap prior_ft in a tuple
-            (posterior_ft,),  # Wrap posterior_ft in a tuple
+            (prior_ft,), # Wrap prior_ft in a tuple
+            (posterior_ft,), # Wrap posterior_ft in a tuple
             prior_flow_length_by_type[prior_ft],
             posterior_flow_length_by_type[posterior_ft],
             init_method,

@@ -7,6 +7,8 @@ import pyro
 import copy
 from pyro.infer import SVI, Trace_ELBO, TraceMeanField_ELBO
 from pyro.optim import Adam, ClippedAdam, PyroOptim, SGD
+from pyro.optim.multi import MixedMultiOptimizer
+import argparse
 
 import pyro.distributions as dist
 import pyro.distributions.transforms as T
@@ -250,16 +252,27 @@ def train(
 
     def per_param_callable(param_name):
         if param_name == 'cluster_means_q_mean':
-            return dict(config.flows.lr.cluster_means_q_mean)
+            return {
+                'optimizer': ClippedAdam,
+                'optim_args': dict(config.flows.lr.cluster_means_q_mean)
+            } 
         elif param_name == 'cluster_scales_q_mean':
-            return dict(config.flows.lr.cluster_scales_q_mean)
+            return {
+                'optimizer': ClippedAdam,
+                'optim_args': dict(config.flows.lr.cluster_scales_q_mean)
+            } 
         else:
-            return dict(config.flows.lr.default)
+            return {
+                'optimizer': ClippedAdam,
+                'optim_args': dict(config.flows.lr.default)
+            }
 
-    scheduler = ClippedAdam(per_param_callable)
-
-    # Setup the inference algorithm
-    svi = SVI(model, guide, scheduler, loss=TraceMeanField_ELBO(num_particles=config.VI.num_particles, vectorize_particles=True))
+    scheduler = pyro.optim.PyroLRScheduler(
+        scheduler_constructor=pyro.optim.ExponentialLR,
+        optim_args=per_param_callable
+    )
+    # SVI setup
+    svi = pyro.infer.SVI(model, guide, scheduler, loss=pyro.infer.Trace_ELBO())
 
     epoch_pbar = tqdm(range(NUM_EPOCHS))
     current_min_loss = float('inf')
@@ -269,6 +282,7 @@ def train(
         for step in range(NUM_BATCHES):
             loss = svi.step(data)
             running_loss += loss / config.flows.batch_size
+        scheduler.step()
 
         epoch_pbar.set_description(f"Epoch {epoch} : loss = {round(running_loss, 4)}")
 
@@ -508,7 +522,6 @@ def posterior_eval(
                 current_power += 1
 
 if __name__ == "__main__":
-    import argparse
 
     parser = argparse.ArgumentParser(description="Train the normalizing flow or load existing parameters.")
     parser.add_argument("-l", "--load_model", action="store_true", default=False, help="Load a pre-trained model.")
@@ -549,7 +562,7 @@ if __name__ == "__main__":
         empirical_prior_means, 
         empirical_prior_scales, 
         true_prior_weights
-    ) = prepare_data(config, args.dlpfc_sample)
+    ) = prepare_data(config, dlpfc_sample=args.dlpfc_sample)
 
     print(empirical_prior_means, empirical_prior_scales)
 
@@ -670,8 +683,8 @@ if __name__ == "__main__":
 
         with pyro.plate("clusters", config.data.num_clusters):
             # Global variational parameters for cluster means and scales
-            cluster_means_q_mean = pyro.param("cluster_means_q_mean", empirical_prior_means + torch.randn_like(empirical_prior_means) * 0.15)
-            cluster_scales_q_mean = pyro.param("cluster_scales_q_mean", empirical_prior_scales + torch.randn_like(empirical_prior_scales) * 0.03, constraint=dist.constraints.positive)
+            cluster_means_q_mean = pyro.param("cluster_means_q_mean", empirical_prior_means + torch.randn_like(empirical_prior_means) * 0.05)
+            cluster_scales_q_mean = pyro.param("cluster_scales_q_mean", empirical_prior_scales + torch.randn_like(empirical_prior_scales) * 0.01, constraint=dist.constraints.positive)
             if config.VI.learn_global_variances:
                 cluster_means_q_scale = pyro.param("cluster_means_q_scale", torch.ones_like(empirical_prior_means) * 1.0, constraint=dist.constraints.positive)
                 cluster_scales_q_scale = pyro.param("cluster_scales_q_scale", torch.ones_like(empirical_prior_scales) * 0.25, constraint=dist.constraints.positive)
