@@ -51,45 +51,46 @@ if torch.cuda.is_available():
     torch.cuda.manual_seed_all(seed)
 
 class GCNFlowModel(nn.Module):
-    def __init__(self, original_graph, in_features, out_features, conv_type="GCN"):
+    def __init__(self, original_graph, in_features, out_features, depth=2, width=512, conv_type="GCN"):
         super().__init__()
         self.x = original_graph.x
         self.edge_index = original_graph.edge_index
-        self.set_layers(in_features, out_features, conv_type)
+        self.set_layers(in_features, out_features, conv_type, depth, width)
 
-    def set_layers(self, in_features, out_features, conv_type):
+    def set_layers(self, in_features, out_features, conv_type, depth, width):
         match conv_type:
             case "GCN":
-                self.layers = nn.ModuleList([
-                    GCNModule(in_features, 512, conv_type),  # First layer with reduced output size
-                    nn.Tanh(),  # Using ReLU activation for better performance
-                    # GCNModule(512, 512, conv_type),  # Second layer with same output size for deeper representation
-                    # nn.Tanh(),  # Another ReLU activation
-                    GCNModule(512, out_features, conv_type)  # Final layer to output the desired features
-                ])
+                self.layers = nn.ModuleList()
+                for _ in range(depth):
+                    self.layers.append(GCNModule(in_features, width, conv_type))
+                    self.layers.append(nn.Tanh())
+                    in_features = width
+                self.layers.append(GCNModule(width, out_features, conv_type))
             case "SGCN":
                 self.layers = nn.ModuleList([
-                    GCNModule(in_features, out_features, conv_type),
+                    GCNModule(in_features, out_features, conv_type, hops=depth),
                 ])
             case "SAGE" | "cuSAGE":
-                self.layers = nn.ModuleList([
-                    GCNModule(in_features, 512, conv_type),
-                    nn.Tanh(),
-                    GCNModule(512, out_features, conv_type)
-                ])
+                self.layers = nn.ModuleList()
+                for _ in range(depth):
+                    self.layers.append(GCNModule(in_features, width, conv_type))
+                    self.layers.append(nn.Tanh())
+                    in_features = width
+                self.layers.append(GCNModule(width, out_features, conv_type))
             case "GAT":
                 NUM_HEADS = 8
                 self.layers = nn.ModuleList([
-                    GCNModule(in_features, 128, neighborhood_size=1, conv="GAT", num_heads=NUM_HEADS),
+                    GCNModule(in_features, width, neighborhood_size=1, conv="GAT", num_heads=NUM_HEADS),
                     nn.Tanh(),
-                    GCNModule(128 * NUM_HEADS, out_features, neighborhood_size=1, conv="GAT", num_heads=1)
+                    GCNModule(width * NUM_HEADS, out_features, neighborhood_size=1, conv="GAT", num_heads=1)
                 ])
             case "GIN":
-                self.layers = nn.ModuleList([
-                    GCNModule(in_features, 512, conv_type),
-                    nn.Tanh(),
-                    GCNModule(512, out_features, conv_type)
-                ])
+                self.layers = nn.ModuleList()
+                for _ in range(depth):
+                    self.layers.append(GCNModule(in_features, width, conv_type))
+                    self.layers.append(nn.Tanh())
+                    in_features = width
+                self.layers.append(GCNModule(width, out_features, conv_type))
             case _:
                 raise NotImplementedError(f"{conv_type} not supported yet.")
         
@@ -110,13 +111,13 @@ class GCNFlowModel(nn.Module):
 
 
 class GCNModule(nn.Module):
-    def __init__(self, in_channels, out_channels, neighborhood_size=1, conv="GCN", num_heads=8):
+    def __init__(self, in_channels, out_channels, hops=1, conv="GCN", num_heads=8):
         super().__init__()
         match conv:
             case "GCN":
                 self.conv = GCNConv(in_channels, out_channels)
             case "SGCN":
-                self.conv = SGConv(in_channels, out_channels, K=neighborhood_size*3)
+                self.conv = SGConv(in_channels, out_channels, K=hops)
             case "SAGE":
                 self.conv = SAGEConv(in_channels, out_channels)
             case "cuSAGE":
@@ -132,7 +133,6 @@ class GCNModule(nn.Module):
                         nn.Linear(out_channels, out_channels)
                     ), 
                     train_eps=True,
-
                 )
             case _:
                 raise NotImplementedError("This convolutional layer does not have support.")
@@ -249,9 +249,9 @@ def train(
     NUM_BATCHES = int(math.ceil(data.shape[0] / config.flows.batch_size))
 
     def per_param_callable(param_name):
-        if param_name == 'cluster_means_q_mean':
+        if 'cluster_means_q_mean' in param_name:
             return dict(config.flows.lr.cluster_means_q_mean)
-        elif param_name == 'cluster_scales_q_mean':
+        elif 'cluster_scales_q_mean' in param_name:
             return dict(config.flows.lr.cluster_scales_q_mean)
         else:
             return dict(config.flows.lr.default)
@@ -268,10 +268,15 @@ def train(
         running_loss = 0.0
         for step in range(NUM_BATCHES):
             loss = svi.step(data)
-            running_loss += loss / config.flows.batch_size
+            running_loss += (loss / config.flows.batch_size)
 
         epoch_pbar.set_description(f"Epoch {epoch} : loss = {round(running_loss, 4)}")
 
+        print(
+            f"MEAN LR", scheduler.optim_objs[pyro.param("cluster_means_q_mean")].state_dict()['param_groups'][0]['lr'], "\n", 
+            f"SCALE LR", scheduler.optim_objs[pyro.param("cluster_scales_q_mean").unconstrained()].state_dict()['param_groups'][0]['lr'], "\n", 
+            f"FLOW LR", scheduler.optim_objs[pyro.param("posterior_flow$$$transform.ode.0.weight")].state_dict()['param_groups'][0]['lr']
+        )
         if epoch % 5 == 0 or epoch == 1:
             with torch.no_grad():  # Ensure no backpropagation graphs are used
                 cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
@@ -303,21 +308,25 @@ def save_filepath(config):
         f"NEIGHBORSIZE={config.data.neighborhood_size}" if config.data.dataset == "SYNTHETIC" else f"RADIUS={config.data.radius}", 
         f"PRIOR_FLOW_TYPE={config.flows.prior_flow_type}", 
         f"PRIOR_FLOW_LENGTH={config.flows.prior_flow_length}" if config.flows.prior_flow_type != 'CNF' else '', 
-        f"GCONV={config.flows.gconv_type}", 
+        f"GDEPTH={config.graphs.depth}",
+        f"GWIDTH={config.graphs.width}",
+        f"GCONV={config.graphs.gconv_type}", 
         f"POST_FLOW_TYPE={config.flows.posterior_flow_type}", 
         f"POST_FLOW_LENGTH={config.flows.posterior_flow_length}" if config.flows.posterior_flow_type != 'CNF' else '', 
         f"HIDDEN_LAYERS={config.flows.hidden_layers}"
     )
     return total_file_path
 
-def edit_flow_nn(config, flow, graph, graph_conv="GCN"):
+def edit_flow_nn(config, flow, graph):
     match type(flow):
         case zuko.flows.continuous.CNF:
             network = GCNFlowModel(
                 original_graph=graph,
                 in_features=flow.transform.ode[0].weight.shape[1],
                 out_features=config.data.num_clusters,
-                conv_type=graph_conv,
+                conv_type=config.graphs.gconv_type,
+                depth=config.graphs.depth,
+                width=config.graphs.width,
             )
             flow.transform.ode = network
         case zuko.flows.autoregressive.MAF:
@@ -325,7 +334,9 @@ def edit_flow_nn(config, flow, graph, graph_conv="GCN"):
                 original_graph=graph,
                 in_features=config.data.num_clusters,
                 out_features=config.data.num_clusters*2,
-                conv_type=graph_conv,
+                conv_type=config.graphs.gconv_type,
+                depth=config.graphs.depth,
+                width=config.graphs.width,
             )
 
             # flow.transform.transforms.insert(0, copy.deepcopy(flow.transform.transforms[0]))
@@ -335,7 +346,9 @@ def edit_flow_nn(config, flow, graph, graph_conv="GCN"):
                 original_graph=graph,
                 in_features=config.data.num_clusters,  # Corrected in_features for neural spline flow
                 out_features=config.data.num_clusters,      # Corrected out_features for neural spline flow
-                conv_type=graph_conv,
+                conv_type=config.graphs.gconv_type,
+                depth=config.graphs.depth,
+                width=config.graphs.width,
             )
 
             flow.transform.transforms.insert(0, copy.deepcopy(flow.transform.transforms[0]))
@@ -599,7 +612,7 @@ if __name__ == "__main__":
         config.flows.batch_size = len(data)
 
     # update the flow to use the gcn as the hypernet
-    cluster_probs_graph_flow_dist = edit_flow_nn(config, cluster_probs_graph_flow_dist, graph, config.flows.gconv_type)
+    cluster_probs_graph_flow_dist = edit_flow_nn(config, cluster_probs_graph_flow_dist, graph)
 
     def model(data):
 
@@ -684,7 +697,6 @@ if __name__ == "__main__":
             cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data, constant=0.0)).to_event(1))
         else:
             cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
-        # print(cluster_means_q_mean - empirical_prior_means)
         print(f"Mean Norm: {torch.norm(cluster_means_q_mean - empirical_prior_means)}")
         print(f"Scale Norm: {torch.norm(cluster_scales_q_mean - empirical_prior_scales)}")
 

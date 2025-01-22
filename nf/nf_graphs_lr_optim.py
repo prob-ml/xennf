@@ -317,7 +317,7 @@ def save_filepath(config):
         f"NEIGHBORSIZE={config.data.neighborhood_size}" if config.data.dataset == "SYNTHETIC" else f"RADIUS={config.data.radius}", 
         f"PRIOR_FLOW_TYPE={config.flows.prior_flow_type}", 
         f"PRIOR_FLOW_LENGTH={config.flows.prior_flow_length}" if config.flows.prior_flow_type != 'CNF' else '', 
-        f"GCONV={config.flows.gconv_type}", 
+        f"GCONV={config.graphs.gconv_type}", 
         f"POST_FLOW_TYPE={config.flows.posterior_flow_type}", 
         f"POST_FLOW_LENGTH={config.flows.posterior_flow_length}" if config.flows.posterior_flow_type != 'CNF' else '', 
         f"HIDDEN_LAYERS={config.flows.hidden_layers}"
@@ -612,7 +612,7 @@ if __name__ == "__main__":
         config.flows.batch_size = len(data)
 
     # update the flow to use the gcn as the hypernet
-    cluster_probs_graph_flow_dist = edit_flow_nn(config, cluster_probs_graph_flow_dist, graph, config.flows.gconv_type)
+    cluster_probs_graph_flow_dist = edit_flow_nn(config, cluster_probs_graph_flow_dist, graph, config.graphs.gconv_type)
 
     def model(data):
 

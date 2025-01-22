@@ -320,7 +320,7 @@ def save_filepath(config):
         f"INIT={config.data.init_method}", 
         f"NEIGHBORSIZE={config.data.neighborhood_size}", 
         f"PRIOR_FLOW_TYPE={config.flows.prior_flow_type}", 
-        f"GCONV={config.flows.gconv_type}", 
+        f"GCONV={config.graphs.gconv_type}", 
         f"POST_FLOW_TYPE={config.flows.posterior_flow_type}", 
         f"FLOW_LENGTH={config.flows.flow_length}" if config.flows.posterior_flow_type != 'CNF' else '', 
         f"HIDDEN_LAYERS={config.flows.hidden_layers}"
@@ -599,7 +599,7 @@ if __name__ == "__main__":
         config.flows.batch_size = len(data)
 
     # update the flow to use the gcn as the hypernet
-    cluster_probs_graph_flow_dist = edit_flow_nn(config, cluster_probs_graph_flow_dist, graph, config.flows.gconv_type)
+    cluster_probs_graph_flow_dist = edit_flow_nn(config, cluster_probs_graph_flow_dist, graph, config.graphs.gconv_type)
 
     TEMPERATURE = 0.75
 

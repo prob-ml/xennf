@@ -3,28 +3,30 @@ import yaml
 import os
 import shutil
 
-use_empirical_params = [True]
-prior_flow_type = ["MAF", "CNF"]
+use_empirical_params = [False]
+prior_flow_type = ["MAF"]
 posterior_flow_type = ["CNF"]
 prior_flow_length_by_type = {
     "CNF": [32],  # CNF only needs one "flow length" since it doesn't use one
-    "MAF": [1, 3, 5],
-    "NSF": [2, 4, 8]
+    "MAF": [1, 3],
+    "NSF": [1, 3]
 }
 posterior_flow_length_by_type = {
     "CNF": [32],  # CNF only needs one "flow length" since it doesn't use one
     "MAF": [16, 32, 64],
     "NSF": [16, 32, 64]
 }
-init_method = ["K-Means", "mclust", "Louvain"]
+init_method = ["K-Means"]
 hidden_layers = [
     [2048, 1024, 512, 256, 128, 64, 32, 16],
 ]
-neighborhood_size = [1, 2]
+neighborhood_size = [1]
 radius_size = [2, 2.25, 2.5, 2.75, 3]
-graph_conv = ["GCN", "SAGE"]
+graph_depth = [1, 2, 3]
+graph_features = [32, 64, 128, 256, 512, 1024]
+graph_conv = ["GCN", "SAGE", "SGCN", "GIN"]
 
-DATASET = "SYNTHETIC"
+DATASET = "DLPFC"
 config_filepath = f"config/config_{DATASET}"
 
 if os.path.exists(config_filepath):
@@ -44,9 +46,13 @@ for prior_ft in prior_flow_type:
             hidden_layers,
             neighborhood_size,
             radius_size,
+            graph_depth,
+            graph_features,
             graph_conv,
             use_empirical_params
         )))
+
+print(f"THERE ARE {len(all_combinations)} COMBOS.")
 
 def get_resolution(dataset, init_method, data_dimension=5, num_clusters=7):
     match dataset:
@@ -69,8 +75,10 @@ for i, combo in enumerate(all_combinations):
     hidden_layers = combo[5]
     neighborhood_size = combo[6]
     radius_size = combo[7]
-    graph_conv = combo[8]
-    use_empirical_params = combo[9]
+    graph_depth = combo[8]
+    graph_width = combo[9]
+    graph_conv = combo[10]
+    use_empirical_params = combo[11]
 
     config_yaml = f"""
     data:
@@ -88,10 +96,13 @@ for i, combo in enumerate(all_combinations):
         learn_global_variances: False
         min_concentration: 0.001
         num_prior_samples: 1000
-        num_posterior_samples: 2500
+        num_posterior_samples: 1000
         num_particles: 3
-    flows:
+    graphs:
+        depth: {graph_depth}
+        width: {graph_width}
         gconv_type: {graph_conv}
+    flows:
         prior_flow_type: {prior_flow_type}
         prior_flow_length: {prior_flow_length}
         posterior_flow_type: {posterior_flow_type}
@@ -106,16 +117,19 @@ for i, combo in enumerate(all_combinations):
             betas: 
               - 0.9
               - 0.999
+            lrd: {1.0 if use_empirical_params else 0.9975}
           cluster_scales_q_mean: 
             lr: {0.0001 if use_empirical_params else 0.001}
             betas: 
               - 0.9
               - 0.999
+            lrd: {1.0 if use_empirical_params else 0.9975}
           default: 
             lr: 0.001
             betas:
               - 0.9
               - 0.999
+            lrd: {0.9965 ** 0.5}
             weight_decay: 1e-6
     """
 

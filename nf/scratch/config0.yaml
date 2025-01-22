@@ -1,0 +1,55 @@
+VI:
+  empirical_prior: false
+  learn_global_variances: false
+  min_concentration: 0.001
+  num_particles: 3
+  num_posterior_samples: 2500
+  num_prior_samples: 1000
+data:
+  data_dimension: 8
+  dataset: DLPFC
+  init_method: None
+  neighborhood_agg: mean
+  neighborhood_size: 1
+  num_clusters: 7
+  num_pcs: 8
+  radius: 2
+  resolution: 0.25
+flows:
+  batch_size: -1
+  gconv_type: GCN
+  hidden_layers:
+  - 2048
+  - 1024
+  - 512
+  - 256
+  - 128
+  - 64
+  - 32
+  - 16
+  lr:
+    cluster_means_q_mean:
+      betas:
+      - 0.9
+      - 0.999
+      lr: 0.01
+      lrd: 0.997
+    cluster_scales_q_mean:
+      betas:
+      - 0.9
+      - 0.999
+      lr: 0.005
+      lrd: 0.997
+    default:
+      betas:
+      - 0.9
+      - 0.999
+      lr: 0.001
+      # weight_decay: 1e-6
+      lrd: 0.994
+  num_epochs: 10000
+  patience: 75
+  posterior_flow_length: 32
+  posterior_flow_type: CNF
+  prior_flow_length: 1
+  prior_flow_type: MAF
