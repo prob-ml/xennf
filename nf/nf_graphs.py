@@ -625,6 +625,8 @@ if __name__ == "__main__":
             cluster_scales = pyro.sample("cluster_scales", dist.LogNormal(empirical_prior_scales, 10.0).to_event(1))
 
         cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_graph_flow_dist()).expand([len(data)]).to_event(1))
+        max_logit = torch.max(cluster_logits, dim=-1, keepdim=True).values
+        stable_logits = cluster_logits - max_logit
 
         with pyro.plate("data", len(data)):
 
@@ -632,7 +634,7 @@ if __name__ == "__main__":
                 pyro.sample(f"obs", dist.MixtureOfDiagNormals(
                         cluster_means.unsqueeze(0).expand(config.flows.batch_size, -1, -1), 
                         cluster_scales.unsqueeze(0).expand(config.flows.batch_size, -1, -1), 
-                        cluster_logits.squeeze(1)
+                        stable_logits.squeeze(1)
                     ), 
                     obs=data
                 )
@@ -641,7 +643,7 @@ if __name__ == "__main__":
                 pyro.sample(f"obs", dist.MixtureOfDiagNormals(
                         cluster_means.unsqueeze(1).expand(-1, config.flows.batch_size, -1, -1), 
                         cluster_scales.unsqueeze(1).expand(-1, config.flows.batch_size, -1, -1), 
-                        cluster_logits.squeeze(1)
+                        stable_logits.squeeze(1)
                     ), 
                     obs=data
                 )

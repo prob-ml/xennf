@@ -3,7 +3,7 @@ import yaml
 import os
 import shutil
 
-use_empirical_params = [False]
+use_empirical_params = [True]
 prior_flow_type = ["MAF"]
 posterior_flow_type = ["CNF"]
 prior_flow_length_by_type = {
@@ -23,7 +23,7 @@ hidden_layers = [
 neighborhood_size = [1]
 radius_size = [2, 2.25, 2.5, 2.75, 3]
 graph_depth = [1, 2, 3]
-graph_features = [32, 64, 128, 256, 512, 1024]
+graph_features = [64, 128, 256, 512]
 graph_conv = ["GCN", "SAGE", "SGCN", "GIN"]
 
 DATASET = "DLPFC"
@@ -117,19 +117,19 @@ for i, combo in enumerate(all_combinations):
             betas: 
               - 0.9
               - 0.999
-            lrd: {1.0 if use_empirical_params else 0.9975}
+            lrd: {1.0 if use_empirical_params else 0.01 ** (1/2500)}
           cluster_scales_q_mean: 
             lr: {0.0001 if use_empirical_params else 0.001}
             betas: 
               - 0.9
               - 0.999
-            lrd: {1.0 if use_empirical_params else 0.9975}
+            lrd: {1.0 if use_empirical_params else 0.01 ** (1/2500)}
           default: 
             lr: 0.001
             betas:
               - 0.9
               - 0.999
-            lrd: {0.9965 ** 0.5}
+            lrd: {0.998 ** 0.5}
             weight_decay: 1e-6
     """
 
