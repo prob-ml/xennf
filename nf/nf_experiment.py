@@ -30,7 +30,7 @@ for gpu_id, batch in enumerate(gpu_batches):
     with open(script_name, 'w') as f:
         f.write('#!/bin/bash\n')
         # Set the visible GPUs to 4, 5, 6
-        f.write('export CUDA_VISIBLE_DEVICES=4,5,6\n')
+        f.write(f'export CUDA_VISIBLE_DEVICES={gpu_id+4}\n')
         # Run commands sequentially
         for cmd in batch:
             f.write(f'{cmd}\n')
@@ -45,5 +45,3 @@ for gpu_id, batch in enumerate(gpu_batches):
     subprocess.run(tmux_command)
 
     print(f"Started tmux session {session_name} running {len(batch)} commands sequentially on GPUs 4, 5, 6")
-
-    # time.sleep(5)

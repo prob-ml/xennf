@@ -16,5 +16,7 @@
 - [ ] Stack a CNF/MAF together?
 - [ ] Attempt a CNF with wider hidden units instead of deeper?
 - [ ] Way more data, but unempirical prior.
-- [ ] GIN and GAT implementations.
+- [x] GIN and GAT implementations.
 - [ ] Convert color schemes to rainbow.
+- [ ] MoNeT
+- [ ] Change mean and scale LR for un-empirical case.

@@ -15,7 +15,7 @@ from pyro.distributions import TransformedDistribution
 
 import torch_geometric as pyg
 import torch.nn as nn
-from torch_geometric.nn import GCNConv, SGConv, SAGEConv, CuGraphSAGEConv, GATConv, GINConv
+from torch_geometric.nn import GCNConv, SGConv, SAGEConv, CuGraphSAGEConv, GATConv, GINConv, GMMConv
 from torch_geometric.data import Data
 from torch_geometric import EdgeIndex
 
@@ -55,7 +55,10 @@ class GCNFlowModel(nn.Module):
         super().__init__()
         self.x = original_graph.x
         self.edge_index = original_graph.edge_index
+        self.edge_attr = original_graph.edge_attr
+        self.edge_weights = original_graph.edge_weights
         self.set_layers(in_features, out_features, conv_type, depth, width)
+        self.conv_type = conv_type
 
     def set_layers(self, in_features, out_features, conv_type, depth, width):
         match conv_type:
@@ -63,7 +66,7 @@ class GCNFlowModel(nn.Module):
                 self.layers = nn.ModuleList()
                 for _ in range(depth):
                     self.layers.append(GCNModule(in_features, width, conv_type))
-                    self.layers.append(nn.Tanh())
+                    self.layers.append(retrieve_activation(config))  # Changed to use retrieve_activation
                     in_features = width
                 self.layers.append(GCNModule(width, out_features, conv_type))
             case "SGCN":
@@ -74,23 +77,31 @@ class GCNFlowModel(nn.Module):
                 self.layers = nn.ModuleList()
                 for _ in range(depth):
                     self.layers.append(GCNModule(in_features, width, conv_type))
-                    self.layers.append(nn.Tanh())
+                    self.layers.append(retrieve_activation(config))  # Changed to use retrieve_activation
                     in_features = width
                 self.layers.append(GCNModule(width, out_features, conv_type))
             case "GAT":
                 NUM_HEADS = 8
                 self.layers = nn.ModuleList([
                     GCNModule(in_features, width, neighborhood_size=1, conv="GAT", num_heads=NUM_HEADS),
-                    nn.Tanh(),
+                    retrieve_activation(config),  # Changed to use retrieve_activation
                     GCNModule(width * NUM_HEADS, out_features, neighborhood_size=1, conv="GAT", num_heads=1)
                 ])
             case "GIN":
                 self.layers = nn.ModuleList()
                 for _ in range(depth):
                     self.layers.append(GCNModule(in_features, width, conv_type))
-                    self.layers.append(nn.Tanh())
+                    self.layers.append(retrieve_activation(config))  # Changed to use retrieve_activation
                     in_features = width
                 self.layers.append(GCNModule(width, out_features, conv_type))
+            case "MoNeT":
+                self.layers = nn.ModuleList()
+                # for _ in range(depth):
+                #     self.layers.append(GCNModule(in_features, width, conv_type))
+                #     self.layers.append(retrieve_activation(config))  # Changed to use retrieve_activation
+                #     in_features = width
+                # self.layers.append(GCNModule(width, out_features, conv_type))
+                self.layers.append(GCNModule(in_features, out_features, conv_type))
             case _:
                 raise NotImplementedError(f"{conv_type} not supported yet.")
         
@@ -104,15 +115,19 @@ class GCNFlowModel(nn.Module):
     def forward(self, x):
         for i, layer in enumerate(self.layers):
             if isinstance(layer, GCNModule):
-                x = layer(x, self.edge_index)
+                if self.conv_type == "MoNeT":
+                    x = layer(x, self.edge_index, self.edge_attr)
+                else:
+                    x = layer(x, self.edge_index)
             else:
                 x = layer(x)
         return x
 
 
 class GCNModule(nn.Module):
-    def __init__(self, in_channels, out_channels, conv="GCN", hops=1, num_heads=8):
+    def __init__(self, in_channels, out_channels, conv="GCN", hops=1, num_heads=8, num_clusters=7):
         super().__init__()
+        self.conv_type = conv
         match conv:
             case "GCN":
                 self.conv = GCNConv(in_channels, out_channels)
@@ -129,11 +144,13 @@ class GCNModule(nn.Module):
                 self.conv = GINConv(
                     nn.Sequential(
                         nn.Linear(in_channels, out_channels),
-                        nn.ReLU(),
+                        retrieve_activation(config),  # Changed to use retrieve_activation
                         nn.Linear(out_channels, out_channels)
                     ), 
                     train_eps=True,
                 )
+            case "MoNeT":
+                self.conv = GMMConv(in_channels, out_channels, dim=2, kernel_size=num_clusters, separate_gaussians=True)
             case _:
                 raise NotImplementedError("This convolutional layer does not have support.")
 
@@ -142,8 +159,32 @@ class GCNModule(nn.Module):
             if param.dim() > 1:  # Only apply to weights
                 nn.init.xavier_uniform_(param)
 
-    def forward(self, x, edge_index):
+    def forward(self, x, edge_index, edge_attr=None, edge_weights=None):
+        if self.conv_type == "MoNeT":
+            return self.conv(x, edge_index, edge_attr=edge_attr)
+        elif self.conv_type in ["GCN"]:
+            return self.conv(x, edge_index, edge_weight=edge_weights)
         return self.conv(x, edge_index)
+
+def retrieve_activation(config):
+    if not hasattr(config.flows, 'activation'):
+        return nn.Tanh()
+
+    match config.flows.activation:
+        case "ReLU":
+            return nn.ReLU()
+        case "LeakyReLU":
+            return nn.LeakyReLU()
+        case "Tanh":
+            return nn.Tanh()
+        case "Sigmoid":
+            return nn.Sigmoid()
+        case "ELU":
+            return nn.ELU()
+        case "SELU":
+            return nn.SELU()
+        case _:
+            return nn.Tanh()
 
 def custom_cluster_initialization(original_adata, method, K=17, num_pcs=3, resolution=0.45, dataset="SYNTHETIC", neighborhood_size=1):
 
@@ -259,7 +300,15 @@ def train(
     scheduler = ClippedAdam(per_param_callable)
 
     # Setup the inference algorithm
-    svi = SVI(model, guide, scheduler, loss=TraceMeanField_ELBO(num_particles=config.VI.num_particles, vectorize_particles=True))
+    # svi = SVI(model, guide, scheduler, loss=TraceMeanField_ELBO(num_particles=config.VI.num_particles, vectorize_particles=True))
+    # ATTEMPT AT CYCLING WHAT TO LEARN
+    flow_optimizer = ClippedAdam(dict(lr=config.flows.lr.default))
+    mean_optimizer = ClippedAdam(dict(lr=config.flows.lr.cluster_means_q_mean))
+    scale_optimizer = ClippedAdam(dict(lr=config.flows.lr.cluster_scales_q_mean))
+    svi_flow = SVI(model, guide, flow_optimizer, loss=TraceMeanField_ELBO(num_particles=config.VI.num_particles, vectorize_particles=True))
+    svi_means = SVI(model, guide, mean_optimizer, loss=TraceMeanField_ELBO(num_particles=config.VI.num_particles, vectorize_particles=True))
+    svi_scales = SVI(model, guide, scale_optimizer, loss=TraceMeanField_ELBO(num_particles=config.VI.num_particles, vectorize_particles=True))
+
 
     epoch_pbar = tqdm(range(NUM_EPOCHS))
     current_min_loss = float('inf')
@@ -267,7 +316,13 @@ def train(
     for epoch in range(1, NUM_EPOCHS + 1):
         running_loss = 0.0
         for step in range(NUM_BATCHES):
-            loss = svi.step(data)
+            # loss = svi.step(data)
+            if epoch % 2 == 0:
+                loss = svi_flow.step(data)
+            else:
+                loss = svi_means.step(data)
+                loss = svi_scales.step(data)
+
             running_loss += (loss / config.flows.batch_size)
 
         epoch_pbar.set_description(f"Epoch {epoch} : loss = {round(running_loss, 4)}")
@@ -284,7 +339,22 @@ def train(
 
                 if config.data.dataset == "DLPFC":
                     true_assignments = original_adata.xenium_spot_data.obs.loc[~original_adata.xenium_spot_data.obs["Region"].isna(), "Region"]
-                    print(f"ARI: {ARI(cluster_assignments_posterior.cpu(), true_assignments):.3f}, NMI: {NMI(cluster_assignments_posterior.cpu(), true_assignments):.3f}")
+                    current_ari = ARI(cluster_assignments_posterior.cpu(), true_assignments)
+                    print(f"ARI: {current_ari:.3f}, NMI: {NMI(cluster_assignments_posterior.cpu(), true_assignments):.3f}")
+                    
+                    if 'max_ari' not in locals():
+                        max_ari = current_ari
+                    else:
+                        max_ari = max(max_ari, current_ari)
+                    
+                    print(f"Maximum ARI so far: {max_ari:.3f}")
+                # posterior_eval(
+                #     data,
+                #     spatial_locations,
+                #     original_adata,
+                #     config,
+                #     num_samples=5
+                # )
 
         if running_loss > current_min_loss:
             patience_counter += 1
@@ -313,7 +383,8 @@ def save_filepath(config):
         f"GCONV={config.graphs.gconv_type}", 
         f"POST_FLOW_TYPE={config.flows.posterior_flow_type}", 
         f"POST_FLOW_LENGTH={config.flows.posterior_flow_length}" if config.flows.posterior_flow_type != 'CNF' else '', 
-        f"HIDDEN_LAYERS={config.flows.hidden_layers}"
+        f"HIDDEN_LAYERS={config.flows.hidden_layers}",
+        f"ACTIVATION={'Tanh' if not hasattr(config.flows, 'activation') else config.flows.activation}"
     )
     return total_file_path
 
@@ -363,6 +434,7 @@ def posterior_eval(
         spatial_locations,  
         original_adata,
         config,
+        num_samples=1000,
         true_prior_weights=None,
         loading_trained_model=False
     ):
@@ -383,7 +455,7 @@ def posterior_eval(
 
     with torch.no_grad():
         current_power = 0
-        for sample_num in range(1, config.VI.num_posterior_samples + 1):
+        for sample_num in range(1, num_samples + 1):
             cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
 
             # Make the logits numerically stable
@@ -520,6 +592,55 @@ def posterior_eval(
 
                 current_power += 1
 
+def pick_device(gpu_arg="auto", max_load=0.10, max_mem=0.15):
+    """
+    Picks a device based on the gpu_arg:
+      - 'cpu' -> CPU
+      - 'auto' -> The GPU with usage under (max_load, max_mem), else the least loaded GPU
+      - integer string -> That GPU index if available
+    Returns a torch.device or raises an error if not possible.
+    """
+    if not torch.cuda.is_available() or gpu_arg.lower() in ["cpu", "none"]:
+        print("CUDA not available or CPU requested. Using CPU.")
+        return torch.device("cpu")
+
+    if gpu_arg.lower() == "auto":
+        # Try to pick a GPU that's under thresholds for load/memory
+        # so we don't overshadow another job if possible.
+        best_gpus = GPUtil.getAvailable(
+            order="memory",
+            limit=1,
+            maxLoad=max_load,
+            maxMemory=max_mem
+        )
+        if best_gpus:
+            # We found a GPU that meets the threshold
+            chosen = best_gpus[0]
+            print(f"Auto-select: Using GPU {chosen} (meets load/mem thresholds)")
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(chosen)
+            return torch.device("cuda:0")  # Now the chosen GPU is "cuda:0" in this environment
+
+        # If none meets the threshold, pick the single GPU with the lowest usage
+        # (still better than a random pick).
+        print("No GPU under thresholds. Picking the GPU with lowest usage.")
+        best_gpus = GPUtil.getAvailable(order="memory", limit=1)
+        if not best_gpus:
+            print("No GPUs found by GPUtil; falling back to CPU.")
+            return torch.device("cpu")
+        chosen = best_gpus[0]
+        print(f"Auto-select: Using GPU {chosen} anyway (busy but minimal).")
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(chosen)
+        return torch.device("cuda:0")
+
+    # Otherwise, the user gave an explicit GPU index
+    try:
+        gpu_index = int(gpu_arg)
+        print(f"User specified GPU {gpu_index}")
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_index)
+        return torch.device("cuda:0")
+    except ValueError:
+        raise ValueError(f"Invalid gpu argument: {gpu_arg}")
+
 if __name__ == "__main__":
     import argparse
 
@@ -528,24 +649,37 @@ if __name__ == "__main__":
     parser.add_argument("-n", "--config_name", default="0", help="The name of the config to use.")
     parser.add_argument("-d", "--dlpfc_sample", type=int, default=151673, help="DLPFC Sample #")
     args = parser.parse_args()
+    device = pick_device("auto")
+
+    # For demonstration: 
+    # set a default tensor type only if we're on CUDA
+    if device.type == "cuda":
+        print(f"Using CUDA device: {device}")
+        torch.set_default_tensor_type(torch.cuda.FloatTensor)
+    else:
+        print("Using CPU device.")
+        torch.set_default_tensor_type(torch.FloatTensor)
+
+    # ... rest of your training code ...
+    print("Now training on device =", device)
 
     # cuda setup
     if torch.cuda.is_available():
         print("YAY! GPU available :3")
         torch.set_default_tensor_type(torch.cuda.FloatTensor)
-        # # Get all available GPUs sorted by memory usage (lowest first)
-        # available_gpus = GPUtil.getAvailable(order='memory', limit=1)
+        # Get all available GPUs sorted by memory usage (lowest first)
+        available_gpus = GPUtil.getAvailable(order='memory', limit=1)
         
-        # if available_gpus:
-        #     selected_gpu = available_gpus[0]
+        if available_gpus:
+            selected_gpu = available_gpus[0]
             
-        #     # Set the GPU with the lowest memory usage
-        #     torch.cuda.set_device(selected_gpu)
-        #     torch.set_default_tensor_type(torch.cuda.FloatTensor)
+            # Set the GPU with the lowest memory usage
+            torch.cuda.set_device(selected_gpu)
+            torch.set_default_tensor_type(torch.cuda.FloatTensor)
             
-        #     print(f"Using GPU: {selected_gpu} with the lowest memory usage.")
-        # else:
-        #     print("No GPUs available with low memory usage.")
+            print(f"Using GPU: {selected_gpu} with the lowest memory usage.")
+        else:
+            print("No GPUs available with low memory usage.")
     else:
         print("No GPU available :(")
 
@@ -575,7 +709,7 @@ if __name__ == "__main__":
         flow_length=config.flows.prior_flow_length,
         num_clusters=config.data.num_clusters,
         context_length=0,
-        hidden_layers=(128, 128)
+        hidden_layers=(256, 256)
     )
 
     # handle DLPFC missingness
@@ -588,6 +722,18 @@ if __name__ == "__main__":
         positions = torch.tensor(spatial_locations[non_na_mask].to_numpy()).float()
         # edge_index = pyg.nn.knn_graph(positions, k=1+4*config.data.neighborhood_size, loop=True)
         edge_index = pyg.nn.radius_graph(positions, r=config.data.radius, loop=True)
+
+        # Calculate edge attributes: polar angle and distance
+        edge_attr = []
+        node1_positions = positions[edge_index[0]]
+        node2_positions = positions[edge_index[1]]
+        distances = torch.norm(node2_positions - node1_positions, dim=1) / config.data.radius # Calculate distances
+        angles = torch.atan2(node2_positions[:, 1] - node1_positions[:, 1], node2_positions[:, 0] - node1_positions[:, 0]) / (torch.pi / 2)  # Calculate polar angles
+        edge_attr = torch.stack((angles, distances), dim=1)  # Store angles and distances as tensor
+
+        edge_attr = torch.tensor(edge_attr, dtype=torch.float32)  # Convert to tensor
+
+        edge_weights = 1.0 / distances
         
         # Print summary metrics about the graph
         num_nodes = positions.shape[0]
@@ -601,7 +747,7 @@ if __name__ == "__main__":
         print(f"Density of the graph: {density:.4f}")
 
         input_x = torch.tensor(original_adata.xenium_spot_data.X[non_na_mask], dtype=torch.float32)
-        graph = Data(x=data, edge_index=edge_index)
+        graph = Data(x=data, edge_index=edge_index, edge_attr=edge_attr, edge_weights=edge_weights)
     else:
 
         # setup the data graph
@@ -703,6 +849,18 @@ if __name__ == "__main__":
             cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data, constant=0.0)).to_event(1))
         else:
             cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
+
+        # # We add the penalty factor here
+        # cluster_probs = torch.softmax(cluster_logits, dim=-1)  # [N, K]
+        # usage = cluster_probs.mean(dim=0)                      # [K]
+        
+        # # KL(p||Unif) = \sum p*log(p/(1/K)) = \sum p*log(p*K)
+        # alpha = 0.1
+        # penalty = alpha * torch.sum(usage * torch.log((usage * config.data.num_clusters) + 1e-30))
+        
+        # # pyro.factor expects a name and a scalar tensor (negative log-factor):
+        # print("UNIFORM PENALTY", -penalty)
+        # pyro.factor("cluster_balance_factor", -penalty, has_rsample=True)
         print(f"Mean Norm: {torch.norm(cluster_means_q_mean - empirical_prior_means)}")
         print(f"Scale Norm: {torch.norm(cluster_scales_q_mean - empirical_prior_scales)}")
 
@@ -733,4 +891,4 @@ if __name__ == "__main__":
         model_file = os.path.join(model_save_path, 'model.save')
         pyro.get_param_store().save(model_file)
 
-    posterior_eval(data, spatial_locations, original_adata, config, true_prior_weights)
+    posterior_eval(data, spatial_locations, original_adata, config, num_samples=config.VI.num_posterior_samples, true_prior_weights=true_prior_weights)

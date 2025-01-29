@@ -3,7 +3,7 @@ import yaml
 import os
 import shutil
 
-use_empirical_params = [True]
+use_empirical_params = [False]
 prior_flow_type = ["MAF"]
 posterior_flow_type = ["CNF"]
 prior_flow_length_by_type = {
@@ -23,8 +23,9 @@ hidden_layers = [
 neighborhood_size = [1]
 radius_size = [2, 2.25, 2.5, 2.75, 3]
 graph_depth = [1, 2, 3]
-graph_features = [64, 128, 256, 512]
-graph_conv = ["GCN", "SAGE", "SGCN", "GIN"]
+graph_features = [256, 512, 1024]
+graph_conv = ["GCN", "SAGE", "GIN"]
+activations = ["Tanh"]
 
 DATASET = "DLPFC"
 config_filepath = f"config/config_{DATASET}"
@@ -49,7 +50,8 @@ for prior_ft in prior_flow_type:
             graph_depth,
             graph_features,
             graph_conv,
-            use_empirical_params
+            use_empirical_params,
+            activations,
         )))
 
 print(f"THERE ARE {len(all_combinations)} COMBOS.")
@@ -79,6 +81,7 @@ for i, combo in enumerate(all_combinations):
     graph_width = combo[9]
     graph_conv = combo[10]
     use_empirical_params = combo[11]
+    activation = combo[12]
 
     config_yaml = f"""
     data:
@@ -111,19 +114,20 @@ for i, combo in enumerate(all_combinations):
         num_epochs: 10000
         batch_size: -1
         patience: {25 if use_empirical_params else 75}
+        activation: {activation}
         lr: 
           cluster_means_q_mean: 
-            lr: {0.0005 if use_empirical_params else 0.005}
+            lr: {0.0005 if use_empirical_params else 0.05}
             betas: 
               - 0.9
               - 0.999
-            lrd: {1.0 if use_empirical_params else 0.01 ** (1/2500)}
+            lrd: {1.0 if use_empirical_params else 0.01 ** (1/1000)}
           cluster_scales_q_mean: 
-            lr: {0.0001 if use_empirical_params else 0.001}
+            lr: {0.0001 if use_empirical_params else 0.01}
             betas: 
               - 0.9
               - 0.999
-            lrd: {1.0 if use_empirical_params else 0.01 ** (1/2500)}
+            lrd: {1.0 if use_empirical_params else 0.01 ** (1/1000)}
           default: 
             lr: 0.001
             betas:
