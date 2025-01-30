@@ -289,26 +289,43 @@ def train(
     NUM_EPOCHS = config.flows.num_epochs
     NUM_BATCHES = int(math.ceil(data.shape[0] / config.flows.batch_size))
 
-    def per_param_callable(param_name):
-        if 'cluster_means_q_mean' in param_name:
-            return dict(config.flows.lr.cluster_means_q_mean)
-        elif 'cluster_scales_q_mean' in param_name:
-            return dict(config.flows.lr.cluster_scales_q_mean)
-        else:
-            return dict(config.flows.lr.default)
+    # def per_param_callable_single_optim(param_name):
+    #     if 'cluster_means_q_mean' in param_name:
+    #         return dict(config.flows.lr.cluster_means_q_mean)
+    #     elif 'cluster_scales_q_mean' in param_name:
+    #         return dict(config.flows.lr.cluster_scales_q_mean)
+    #     else:
+    #         return dict(config.flows.lr.default)
 
-    scheduler = ClippedAdam(per_param_callable)
+    # scheduler = ClippedAdam(per_param_callable_single_optim)
 
     # Setup the inference algorithm
     # svi = SVI(model, guide, scheduler, loss=TraceMeanField_ELBO(num_particles=config.VI.num_particles, vectorize_particles=True))
+    
+    
     # ATTEMPT AT CYCLING WHAT TO LEARN
-    flow_optimizer = ClippedAdam(dict(lr=config.flows.lr.default))
-    mean_optimizer = ClippedAdam(dict(lr=config.flows.lr.cluster_means_q_mean))
-    scale_optimizer = ClippedAdam(dict(lr=config.flows.lr.cluster_scales_q_mean))
+    def per_param_callable_mean_optim(param_name):
+        if 'cluster_means_q_mean' in param_name:
+            return dict(config.flows.lr.cluster_means_q_mean)
+        else:
+            return {"lr": 0.0}
+    def per_param_callable_scale_optim(param_name):
+        if 'cluster_scales_q_mean' in param_name:
+            return dict(config.flows.lr.cluster_scales_q_mean)
+        else:
+            return {"lr": 0.0}
+    def per_param_callable_flow_optim(param_name):
+        if 'flow' in param_name:
+            return dict(config.flows.lr.default)
+        else:
+            return {"lr": 0.0}
+            
+    flow_optimizer = ClippedAdam(per_param_callable_flow_optim)
+    mean_optimizer = ClippedAdam(per_param_callable_mean_optim)
+    scale_optimizer = ClippedAdam(per_param_callable_scale_optim)
     svi_flow = SVI(model, guide, flow_optimizer, loss=TraceMeanField_ELBO(num_particles=config.VI.num_particles, vectorize_particles=True))
     svi_means = SVI(model, guide, mean_optimizer, loss=TraceMeanField_ELBO(num_particles=config.VI.num_particles, vectorize_particles=True))
     svi_scales = SVI(model, guide, scale_optimizer, loss=TraceMeanField_ELBO(num_particles=config.VI.num_particles, vectorize_particles=True))
-
 
     epoch_pbar = tqdm(range(NUM_EPOCHS))
     current_min_loss = float('inf')
@@ -317,7 +334,7 @@ def train(
         running_loss = 0.0
         for step in range(NUM_BATCHES):
             # loss = svi.step(data)
-            if epoch % 2 == 0:
+            if epoch % 40 > 20:
                 loss = svi_flow.step(data)
             else:
                 loss = svi_means.step(data)
@@ -327,11 +344,11 @@ def train(
 
         epoch_pbar.set_description(f"Epoch {epoch} : loss = {round(running_loss, 4)}")
 
-        print(
-            f"MEAN LR", scheduler.optim_objs[pyro.param("cluster_means_q_mean")].state_dict()['param_groups'][0]['lr'], "\n", 
-            f"SCALE LR", scheduler.optim_objs[pyro.param("cluster_scales_q_mean").unconstrained()].state_dict()['param_groups'][0]['lr'], "\n", 
-            f"FLOW LR", scheduler.optim_objs[pyro.param("posterior_flow$$$transform.ode.0.weight")].state_dict()['param_groups'][0]['lr']
-        )
+        # print(
+        #     f"MEAN LR", scheduler.optim_objs[pyro.param("cluster_means_q_mean")].state_dict()['param_groups'][0]['lr'], "\n", 
+        #     f"SCALE LR", scheduler.optim_objs[pyro.param("cluster_scales_q_mean").unconstrained()].state_dict()['param_groups'][0]['lr'], "\n", 
+        #     f"FLOW LR", scheduler.optim_objs[pyro.param("posterior_flow$$$transform.ode.0.weight")].state_dict()['param_groups'][0]['lr']
+        # )
         if epoch % 5 == 0 or epoch == 1:
             with torch.no_grad():  # Ensure no backpropagation graphs are used
                 cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
@@ -687,7 +704,7 @@ if __name__ == "__main__":
     torch.set_printoptions(sci_mode=False)
     expected_total_param_dim = 2 # K x D
     warnings.filterwarnings("ignore")
-    config = OmegaConf.load(f'config/config_DLPFC/config{args.config_name}.yaml')
+    config = OmegaConf.load(f'config/config_DLPFC_noemp/config{args.config_name}.yaml')
     # don't run model again if it exists 
     if os.path.exists(save_filepath(config)):
         print("Directory already exists. Ending execution.")
@@ -709,7 +726,8 @@ if __name__ == "__main__":
         flow_length=config.flows.prior_flow_length,
         num_clusters=config.data.num_clusters,
         context_length=0,
-        hidden_layers=(256, 256)
+        hidden_layers=(256, 256),
+        activation="Tanh" if not hasattr(config.flows, "activation") else config.flows.activation
     )
 
     # handle DLPFC missingness
@@ -826,7 +844,8 @@ if __name__ == "__main__":
         flow_length=config.flows.posterior_flow_length,
         num_clusters=config.data.num_clusters,
         context_length=config.data.data_dimension,
-        hidden_layers=config.flows.hidden_layers
+        hidden_layers=config.flows.hidden_layers,
+        activation="Tanh" if not hasattr(config.flows, "activation") else config.flows.activation
     )
  
     def guide(data):
