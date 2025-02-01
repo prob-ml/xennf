@@ -289,43 +289,43 @@ def train(
     NUM_EPOCHS = config.flows.num_epochs
     NUM_BATCHES = int(math.ceil(data.shape[0] / config.flows.batch_size))
 
-    # def per_param_callable_single_optim(param_name):
-    #     if 'cluster_means_q_mean' in param_name:
-    #         return dict(config.flows.lr.cluster_means_q_mean)
-    #     elif 'cluster_scales_q_mean' in param_name:
-    #         return dict(config.flows.lr.cluster_scales_q_mean)
-    #     else:
-    #         return dict(config.flows.lr.default)
+    def per_param_callable_single_optim(param_name):
+        if 'cluster_means_q_mean' in param_name:
+            return dict(config.flows.lr.cluster_means_q_mean)
+        elif 'cluster_scales_q_mean' in param_name:
+            return dict(config.flows.lr.cluster_scales_q_mean)
+        else:
+            return dict(config.flows.lr.default)
 
-    # scheduler = ClippedAdam(per_param_callable_single_optim)
+    scheduler = ClippedAdam(per_param_callable_single_optim)
 
     # Setup the inference algorithm
-    # svi = SVI(model, guide, scheduler, loss=TraceMeanField_ELBO(num_particles=config.VI.num_particles, vectorize_particles=True))
+    svi = SVI(model, guide, scheduler, loss=TraceMeanField_ELBO(num_particles=config.VI.num_particles, vectorize_particles=True))
     
     
     # ATTEMPT AT CYCLING WHAT TO LEARN
-    def per_param_callable_mean_optim(param_name):
-        if 'cluster_means_q_mean' in param_name:
-            return dict(config.flows.lr.cluster_means_q_mean)
-        else:
-            return {"lr": 0.0}
-    def per_param_callable_scale_optim(param_name):
-        if 'cluster_scales_q_mean' in param_name:
-            return dict(config.flows.lr.cluster_scales_q_mean)
-        else:
-            return {"lr": 0.0}
-    def per_param_callable_flow_optim(param_name):
-        if 'flow' in param_name:
-            return dict(config.flows.lr.default)
-        else:
-            return {"lr": 0.0}
+    # def per_param_callable_mean_optim(param_name):
+    #     if 'cluster_means_q_mean' in param_name:
+    #         return dict(config.flows.lr.cluster_means_q_mean)
+    #     else:
+    #         return {"lr": 0.0}
+    # def per_param_callable_scale_optim(param_name):
+    #     if 'cluster_scales_q_mean' in param_name:
+    #         return dict(config.flows.lr.cluster_scales_q_mean)
+    #     else:
+    #         return {"lr": 0.0}
+    # def per_param_callable_flow_optim(param_name):
+    #     if 'flow' in param_name:
+    #         return dict(config.flows.lr.default)
+    #     else:
+    #         return {"lr": 0.0}
             
-    flow_optimizer = ClippedAdam(per_param_callable_flow_optim)
-    mean_optimizer = ClippedAdam(per_param_callable_mean_optim)
-    scale_optimizer = ClippedAdam(per_param_callable_scale_optim)
-    svi_flow = SVI(model, guide, flow_optimizer, loss=TraceMeanField_ELBO(num_particles=config.VI.num_particles, vectorize_particles=True))
-    svi_means = SVI(model, guide, mean_optimizer, loss=TraceMeanField_ELBO(num_particles=config.VI.num_particles, vectorize_particles=True))
-    svi_scales = SVI(model, guide, scale_optimizer, loss=TraceMeanField_ELBO(num_particles=config.VI.num_particles, vectorize_particles=True))
+    # flow_optimizer = ClippedAdam(per_param_callable_flow_optim)
+    # mean_optimizer = ClippedAdam(per_param_callable_mean_optim)
+    # scale_optimizer = ClippedAdam(per_param_callable_scale_optim)
+    # svi_flow = SVI(model, guide, flow_optimizer, loss=TraceMeanField_ELBO(num_particles=config.VI.num_particles, vectorize_particles=True))
+    # svi_means = SVI(model, guide, mean_optimizer, loss=TraceMeanField_ELBO(num_particles=config.VI.num_particles, vectorize_particles=True))
+    # svi_scales = SVI(model, guide, scale_optimizer, loss=TraceMeanField_ELBO(num_particles=config.VI.num_particles, vectorize_particles=True))
 
     epoch_pbar = tqdm(range(NUM_EPOCHS))
     current_min_loss = float('inf')
@@ -333,22 +333,22 @@ def train(
     for epoch in range(1, NUM_EPOCHS + 1):
         running_loss = 0.0
         for step in range(NUM_BATCHES):
-            # loss = svi.step(data)
-            if epoch % 40 > 20:
-                loss = svi_flow.step(data)
-            else:
-                loss = svi_means.step(data)
-                loss = svi_scales.step(data)
+            loss = svi.step(data)
+            # if epoch % 40 > 20:
+            #     loss = svi_flow.step(data)
+            # else:
+            #     loss = svi_means.step(data)
+            #     loss = svi_scales.step(data)
 
             running_loss += (loss / config.flows.batch_size)
 
         epoch_pbar.set_description(f"Epoch {epoch} : loss = {round(running_loss, 4)}")
 
-        # print(
-        #     f"MEAN LR", scheduler.optim_objs[pyro.param("cluster_means_q_mean")].state_dict()['param_groups'][0]['lr'], "\n", 
-        #     f"SCALE LR", scheduler.optim_objs[pyro.param("cluster_scales_q_mean").unconstrained()].state_dict()['param_groups'][0]['lr'], "\n", 
-        #     f"FLOW LR", scheduler.optim_objs[pyro.param("posterior_flow$$$transform.ode.0.weight")].state_dict()['param_groups'][0]['lr']
-        # )
+        print(
+            f"MEAN LR", scheduler.optim_objs[pyro.param("cluster_means_q_mean")].state_dict()['param_groups'][0]['lr'], "\n", 
+            f"SCALE LR", scheduler.optim_objs[pyro.param("cluster_scales_q_mean").unconstrained()].state_dict()['param_groups'][0]['lr'], "\n", 
+            f"FLOW LR", scheduler.optim_objs[pyro.param("posterior_flow$$$transform.ode.0.weight")].state_dict()['param_groups'][0]['lr']
+        )
         if epoch % 5 == 0 or epoch == 1:
             with torch.no_grad():  # Ensure no backpropagation graphs are used
                 cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
@@ -747,7 +747,8 @@ if __name__ == "__main__":
         node2_positions = positions[edge_index[1]]
         distances = torch.norm(node2_positions - node1_positions, dim=1) / config.data.radius # Calculate distances
         angles = torch.atan2(node2_positions[:, 1] - node1_positions[:, 1], node2_positions[:, 0] - node1_positions[:, 0]) / (torch.pi / 2)  # Calculate polar angles
-        edge_attr = torch.stack((angles, distances), dim=1)  # Store angles and distances as tensor
+        degrees = torch.bincount(edge_index.flatten(), minlength=positions.shape[0])
+        edge_attr = torch.stack((angles, distances, degrees[edge_index[0]], degrees[edge_index[1]]), dim=1)  # Store angles and distances as tensor
 
         edge_attr = torch.tensor(edge_attr, dtype=torch.float32)  # Convert to tensor
 
@@ -838,6 +839,14 @@ if __name__ == "__main__":
         #             ), 
         #             obs=batch_data
         #         )
+
+        # Implement KL annealing
+        kl_annealing_factor = 1.0  # Set the annealing factor
+        kl_divergence = dist.kl.kl_divergence(
+            dist.Normal(cluster_means, cluster_scales), 
+            dist.Normal(empirical_prior_means, empirical_prior_scales)
+        )
+        pyro.factor("kl_annealing_factor", -kl_annealing_factor * kl_divergence)
 
     cluster_probs_flow_dist = setup_zuko_flow(
         flow_type=config.flows.posterior_flow_type,
