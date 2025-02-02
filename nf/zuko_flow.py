@@ -106,7 +106,7 @@ def setup_zuko_flow(flow_type: str, num_clusters: int, flow_length: int = 1, con
                 transforms=flow_length,
                 hidden_features=hidden_layers,
                 activation=retrieve_activation(activation),
-                # residual=True
+                residual=False
             )
         case "CNF":
             cluster_probs_flow_dist = zuko.flows.continuous.CNF(

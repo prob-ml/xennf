@@ -3,7 +3,7 @@ import yaml
 import os
 import shutil
 
-use_empirical_params = [False]
+use_empirical_params = [True]
 prior_flow_type = ["MAF"]
 posterior_flow_type = ["CNF"]
 prior_flow_length_by_type = {
@@ -26,6 +26,7 @@ graph_depth = [1, 2, 3]
 graph_features = [256, 512, 1024]
 graph_conv = ["GCN", "SAGE", "GIN"]
 activations = ["Tanh"]
+KL_Annealing = [True, False]
 
 DATASET = "DLPFC"
 config_filepath = f"config/config_{DATASET}"
@@ -52,6 +53,7 @@ for prior_ft in prior_flow_type:
             graph_conv,
             use_empirical_params,
             activations,
+            KL_Annealing,
         )))
 
 print(f"THERE ARE {len(all_combinations)} COMBOS.")
@@ -82,6 +84,7 @@ for i, combo in enumerate(all_combinations):
     graph_conv = combo[10]
     use_empirical_params = combo[11]
     activation = combo[12]
+    kl_anneal = combo[13]
 
     config_yaml = f"""
     data:
@@ -96,6 +99,7 @@ for i, combo in enumerate(all_combinations):
         radius: {radius_size}
     VI:
         empirical_prior: {use_empirical_params}
+        kl_annealing: {kl_anneal}
         learn_global_variances: False
         min_concentration: 0.001
         num_prior_samples: 1000

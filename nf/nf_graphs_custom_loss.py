@@ -288,6 +288,8 @@ def train(
 
     NUM_EPOCHS = config.flows.num_epochs
     NUM_BATCHES = int(math.ceil(data.shape[0] / config.flows.batch_size))
+    NUM_ANNEALING_STEPS = 500
+    MIN_ANNEAL = 0.001
 
     def per_param_callable_single_optim(param_name):
         if 'cluster_means_q_mean' in param_name:
@@ -331,9 +333,11 @@ def train(
     current_min_loss = float('inf')
     patience_counter = 0
     for epoch in range(1, NUM_EPOCHS + 1):
+        annealing_factor = min(1.0, max(epoch / NUM_ANNEALING_STEPS, MIN_ANNEAL))
         running_loss = 0.0
         for step in range(NUM_BATCHES):
-            loss = svi.step(data)
+            loss = svi.step(data, annealing_factor=annealing_factor)
+            running_loss += (loss / config.flows.batch_size)
             # if epoch % 40 > 20:
             #     loss = svi_flow.step(data)
             # else:
@@ -704,7 +708,7 @@ if __name__ == "__main__":
     torch.set_printoptions(sci_mode=False)
     expected_total_param_dim = 2 # K x D
     warnings.filterwarnings("ignore")
-    config = OmegaConf.load(f'config/config_DLPFC_noemp/config{args.config_name}.yaml')
+    config = OmegaConf.load(f'config/config_DLPFC/config{args.config_name}.yaml')
     # don't run model again if it exists 
     if os.path.exists(save_filepath(config)):
         print("Directory already exists. Ending execution.")
@@ -788,12 +792,21 @@ if __name__ == "__main__":
         pyro.module("prior_flow", cluster_probs_graph_flow_dist)
         
         with pyro.plate("clusters", config.data.num_clusters):
-            with pyro.poutine.scale(scale=annealing_factor):
+            if config.VI.kl_annealing:
+                with pyro.poutine.scale(scale=annealing_factor):
+                    # Define the means and variances of the Gaussian components
+                    cluster_means = pyro.sample("cluster_means", dist.Normal(empirical_prior_means, 10.0).to_event(1))
+                    cluster_scales = pyro.sample("cluster_scales", dist.LogNormal(empirical_prior_scales, 10.0).to_event(1))
+            else:
                 # Define the means and variances of the Gaussian components
                 cluster_means = pyro.sample("cluster_means", dist.Normal(empirical_prior_means, 10.0).to_event(1))
                 cluster_scales = pyro.sample("cluster_scales", dist.LogNormal(empirical_prior_scales, 10.0).to_event(1))
-
-        with pyro.poutine.scale(scale=annealing_factor):
+        if config.VI.kl_annealing:
+            with pyro.poutine.scale(scale=annealing_factor):
+                cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_graph_flow_dist()).expand([len(data)]).to_event(1))
+                max_logit = torch.max(cluster_logits, dim=-1, keepdim=True).values
+                stable_logits = cluster_logits - max_logit
+        else:
             cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_graph_flow_dist()).expand([len(data)]).to_event(1))
             max_logit = torch.max(cluster_logits, dim=-1, keepdim=True).values
             stable_logits = cluster_logits - max_logit
@@ -861,13 +874,25 @@ if __name__ == "__main__":
             if config.VI.learn_global_variances:
                 cluster_means_q_scale = pyro.param("cluster_means_q_scale", torch.ones_like(empirical_prior_means) * 1.0, constraint=dist.constraints.positive)
                 cluster_scales_q_scale = pyro.param("cluster_scales_q_scale", torch.ones_like(empirical_prior_scales) * 0.25, constraint=dist.constraints.positive)
-                with pyro.poutine.scale(scale=annealing_factor):
+                
+                # Check if KL annealing is enabled
+                if config.VI.kl_annealing:
+                    with pyro.poutine.scale(scale=annealing_factor):
+                        cluster_means = pyro.sample("cluster_means", dist.Normal(cluster_means_q_mean, cluster_means_q_scale).to_event(1))
+                        cluster_scales = pyro.sample("cluster_scales", dist.LogNormal(cluster_scales_q_mean, cluster_scales_q_scale).to_event(1))
+                else:
                     cluster_means = pyro.sample("cluster_means", dist.Normal(cluster_means_q_mean, cluster_means_q_scale).to_event(1))
                     cluster_scales = pyro.sample("cluster_scales", dist.LogNormal(cluster_scales_q_mean, cluster_scales_q_scale).to_event(1))
             else:
-                with pyro.poutine.scale(scale=annealing_factor):
+                # Check if KL annealing is enabled for Delta sampling
+                if config.VI.kl_annealing:
+                    with pyro.poutine.scale(scale=annealing_factor):
+                        cluster_means = pyro.sample("cluster_means", dist.Delta(cluster_means_q_mean).to_event(1))
+                        cluster_scales = pyro.sample("cluster_scales", dist.Delta(cluster_scales_q_mean).to_event(1))
+                else:
                     cluster_means = pyro.sample("cluster_means", dist.Delta(cluster_means_q_mean).to_event(1))
                     cluster_scales = pyro.sample("cluster_scales", dist.Delta(cluster_scales_q_mean).to_event(1))
+        
         if config.flows.posterior_flow_type == "UMNN":
             with pyro.poutine.scale(scale=annealing_factor):
                 cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data, constant=0.0)).to_event(1))
