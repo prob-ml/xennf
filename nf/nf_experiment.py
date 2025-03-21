@@ -8,7 +8,7 @@ NUM_GPUS = 3
 
 def format_command(name):
     return (
-        f"python nf_graphs.py "
+        f"python nf_graphs_custom_loss.py "
         f"--config_name={name}"
     )
 

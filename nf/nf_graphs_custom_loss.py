@@ -116,7 +116,9 @@ class GCNFlowModel(nn.Module):
         for i, layer in enumerate(self.layers):
             if isinstance(layer, GCNModule):
                 if self.conv_type == "MoNeT":
-                    x = layer(x, self.edge_index, self.edge_attr)
+                    x = layer(x, self.edge_index, edge_attr=self.edge_attr)
+                # elif self.conv_type == "GCN":
+                #     x = layer(x, self.edge_index, edge_weights=self.edge_weights)
                 else:
                     x = layer(x, self.edge_index)
             else:
@@ -265,7 +267,9 @@ def prepare_data(config, dlpfc_sample):
                 json.dump(cluster_metrics, fp)
 
     empirical_prior_means = torch.randn(config.data.num_clusters, gene_data.shape[1])
-    empirical_prior_scales = 1.0 + torch.abs(torch.randn(config.data.num_clusters, gene_data.shape[1]))
+    # empirical_prior_means = torch.ones(config.data.num_clusters, gene_data.shape[1])
+    empirical_prior_scales = torch.abs(torch.randn(config.data.num_clusters, gene_data.shape[1])).clamp(min=0.1)
+    # empirical_prior_scales = torch.ones(config.data.num_clusters, gene_data.shape[1]) * 0.1
     if config.VI.empirical_prior:
         assert sum(np.unique(initial_clusters) >= 0) == config.data.num_clusters, "K doesn't match initial number of unique detected clusters."
         for i in range(config.data.num_clusters):
@@ -288,7 +292,6 @@ def train(
 
     NUM_EPOCHS = config.flows.num_epochs
     NUM_BATCHES = int(math.ceil(data.shape[0] / config.flows.batch_size))
-    NUM_ANNEALING_STEPS = 500
     MIN_ANNEAL = 0.001
 
     def per_param_callable_single_optim(param_name):
@@ -303,7 +306,6 @@ def train(
 
     # Setup the inference algorithm
     svi = SVI(model, guide, scheduler, loss=TraceMeanField_ELBO(num_particles=config.VI.num_particles, vectorize_particles=True))
-    
     
     # ATTEMPT AT CYCLING WHAT TO LEARN
     # def per_param_callable_mean_optim(param_name):
@@ -333,10 +335,11 @@ def train(
     current_min_loss = float('inf')
     patience_counter = 0
     for epoch in range(1, NUM_EPOCHS + 1):
-        annealing_factor = min(1.0, max(epoch / NUM_ANNEALING_STEPS, MIN_ANNEAL))
+        annealing_factor = 1.0 if not config.VI.kl_annealing else min(1.0, max(epoch / config.VI.kl_annealing, MIN_ANNEAL))
+        # print("ANNEALING FACTOR", annealing_factor)
         running_loss = 0.0
         for step in range(NUM_BATCHES):
-            loss = svi.step(data, annealing_factor=annealing_factor)
+            loss = svi.step(data, annealing_factor=annealing_factor)  # Pass annealing_factor to svi.step
             running_loss += (loss / config.flows.batch_size)
             # if epoch % 40 > 20:
             #     loss = svi_flow.step(data)
@@ -344,22 +347,26 @@ def train(
             #     loss = svi_means.step(data)
             #     loss = svi_scales.step(data)
 
-            running_loss += (loss / config.flows.batch_size)
-
         epoch_pbar.set_description(f"Epoch {epoch} : loss = {round(running_loss, 4)}")
 
-        print(
-            f"MEAN LR", scheduler.optim_objs[pyro.param("cluster_means_q_mean")].state_dict()['param_groups'][0]['lr'], "\n", 
-            f"SCALE LR", scheduler.optim_objs[pyro.param("cluster_scales_q_mean").unconstrained()].state_dict()['param_groups'][0]['lr'], "\n", 
-            f"FLOW LR", scheduler.optim_objs[pyro.param("posterior_flow$$$transform.ode.0.weight")].state_dict()['param_groups'][0]['lr']
-        )
-        if epoch % 5 == 0 or epoch == 1:
+        # print(
+        #     f"MEAN LR", scheduler.optim_objs[pyro.param("cluster_means_q_mean")].state_dict()['param_groups'][0]['lr'], "\n", 
+        #     f"SCALE LR", scheduler.optim_objs[pyro.param("cluster_scales_q_mean").unconstrained()].state_dict()['param_groups'][0]['lr'], "\n", 
+        #     f"FLOW LR", scheduler.optim_objs[pyro.param("posterior_flow$$$transform.ode.0.weight")].state_dict()['param_groups'][0]['lr']
+        # )
+        if epoch % 10 == 0 or epoch == 1:
             with torch.no_grad():  # Ensure no backpropagation graphs are used
                 cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
-                cluster_assignments_posterior = torch.argmax(torch.softmax(cluster_logits, dim=1), dim=1)
+                cluster_assignments_posterior = torch.argmax(cluster_logits, dim=1)
 
                 if config.data.dataset == "DLPFC":
                     true_assignments = original_adata.xenium_spot_data.obs.loc[~original_adata.xenium_spot_data.obs["Region"].isna(), "Region"]
+                    print("Total Clusters Used:", torch.unique(cluster_assignments_posterior).numel(), "OUT OF", len(true_assignments.unique()))
+                    # Print the cluster proportion breakdown for the posterior and the ground truth
+                    posterior_proportions = torch.bincount(cluster_assignments_posterior).float() / len(cluster_assignments_posterior)
+                    true_proportions = torch.bincount(torch.tensor(true_assignments.astype('category').cat.codes)).float() / len(true_assignments)
+                    print(f"Posterior Cluster Proportions: {posterior_proportions}")
+                    print(f"True Cluster Proportions: {true_proportions}")
                     current_ari = ARI(cluster_assignments_posterior.cpu(), true_assignments)
                     print(f"ARI: {current_ari:.3f}, NMI: {NMI(cluster_assignments_posterior.cpu(), true_assignments):.3f}")
                     
@@ -405,7 +412,9 @@ def save_filepath(config):
         f"POST_FLOW_TYPE={config.flows.posterior_flow_type}", 
         f"POST_FLOW_LENGTH={config.flows.posterior_flow_length}" if config.flows.posterior_flow_type != 'CNF' else '', 
         f"HIDDEN_LAYERS={config.flows.hidden_layers}",
-        f"ACTIVATION={'Tanh' if not hasattr(config.flows, 'activation') else config.flows.activation}"
+        f"ACTIVATION={'Tanh' if not hasattr(config.flows, 'activation') else config.flows.activation}",
+        f"CLIPNORM={None if not hasattr(config.lr.cluster_means_q_mean, 'clip_norm') else config.lr.cluster_means_q_mean.clip_norm}",
+        f"KL_ANNEAL={config.VI.kl_annealing}"
     )
     return total_file_path
 
@@ -672,18 +681,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     device = pick_device("auto")
 
-    # For demonstration: 
-    # set a default tensor type only if we're on CUDA
-    if device.type == "cuda":
-        print(f"Using CUDA device: {device}")
-        torch.set_default_tensor_type(torch.cuda.FloatTensor)
-    else:
-        print("Using CPU device.")
-        torch.set_default_tensor_type(torch.FloatTensor)
-
-    # ... rest of your training code ...
-    print("Now training on device =", device)
-
     # cuda setup
     if torch.cuda.is_available():
         print("YAY! GPU available :3")
@@ -723,8 +720,6 @@ if __name__ == "__main__":
         true_prior_weights
     ) = prepare_data(config, args.dlpfc_sample)
 
-    print(empirical_prior_means, empirical_prior_scales)
-
     cluster_probs_graph_flow_dist = setup_zuko_flow(
         flow_type=config.flows.prior_flow_type,
         flow_length=config.flows.prior_flow_length,
@@ -754,9 +749,10 @@ if __name__ == "__main__":
         degrees = torch.bincount(edge_index.flatten(), minlength=positions.shape[0])
         edge_attr = torch.stack((angles, distances, degrees[edge_index[0]], degrees[edge_index[1]]), dim=1)  # Store angles and distances as tensor
 
-        edge_attr = torch.tensor(edge_attr, dtype=torch.float32)  # Convert to tensor
+        edge_attr = torch.tensor(edge_attr, dtype=torch.float32)
 
-        edge_weights = 1.0 / distances
+        # if using edge weights, set a max value (1.0) so that weights don't explode
+        edge_weights = (1.0 / distances.clamp(min=1e-6)).clamp(max=1.0)
         
         # Print summary metrics about the graph
         num_nodes = positions.shape[0]
@@ -794,6 +790,7 @@ if __name__ == "__main__":
         with pyro.plate("clusters", config.data.num_clusters):
             if config.VI.kl_annealing:
                 with pyro.poutine.scale(scale=annealing_factor):
+                    print(annealing_factor)
                     # Define the means and variances of the Gaussian components
                     cluster_means = pyro.sample("cluster_means", dist.Normal(empirical_prior_means, 10.0).to_event(1))
                     cluster_scales = pyro.sample("cluster_scales", dist.LogNormal(empirical_prior_scales, 10.0).to_event(1))
@@ -872,8 +869,8 @@ if __name__ == "__main__":
             cluster_means_q_mean = pyro.param("cluster_means_q_mean", empirical_prior_means + torch.randn_like(empirical_prior_means) * 0.15)
             cluster_scales_q_mean = pyro.param("cluster_scales_q_mean", empirical_prior_scales + torch.randn_like(empirical_prior_scales) * 0.03, constraint=dist.constraints.positive)
             if config.VI.learn_global_variances:
-                cluster_means_q_scale = pyro.param("cluster_means_q_scale", torch.ones_like(empirical_prior_means) * 1.0, constraint=dist.constraints.positive)
-                cluster_scales_q_scale = pyro.param("cluster_scales_q_scale", torch.ones_like(empirical_prior_scales) * 0.25, constraint=dist.constraints.positive)
+                cluster_means_q_scale = pyro.param("cluster_means_q_scale", torch.ones_like(empirical_prior_means) * 0.05, constraint=dist.constraints.positive)
+                cluster_scales_q_scale = pyro.param("cluster_scales_q_scale", torch.ones_like(empirical_prior_scales) * 0.025, constraint=dist.constraints.positive)
                 
                 # Check if KL annealing is enabled
                 if config.VI.kl_annealing:
@@ -894,10 +891,18 @@ if __name__ == "__main__":
                     cluster_scales = pyro.sample("cluster_scales", dist.Delta(cluster_scales_q_mean).to_event(1))
         
         if config.flows.posterior_flow_type == "UMNN":
-            with pyro.poutine.scale(scale=annealing_factor):
+            # Handle the case when kl_annealing is false
+            if config.VI.kl_annealing:
+                with pyro.poutine.scale(scale=annealing_factor):
+                    cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data, constant=0.0)).to_event(1))
+            else:
                 cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data, constant=0.0)).to_event(1))
         else:
-            with pyro.poutine.scale(scale=annealing_factor):
+            # Handle the case when kl_annealing is false
+            if config.VI.kl_annealing:
+                with pyro.poutine.scale(scale=annealing_factor):
+                    cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
+            else:
                 cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
 
         # # We add the penalty factor here
@@ -911,8 +916,8 @@ if __name__ == "__main__":
         # # pyro.factor expects a name and a scalar tensor (negative log-factor):
         # print("UNIFORM PENALTY", -penalty)
         # pyro.factor("cluster_balance_factor", -penalty, has_rsample=True)
-        print(f"Mean Norm: {torch.norm(cluster_means_q_mean - empirical_prior_means)}")
-        print(f"Scale Norm: {torch.norm(cluster_scales_q_mean - empirical_prior_scales)}")
+        # print(f"Mean Norm: {torch.norm(cluster_means_q_mean - empirical_prior_means)}")
+        # print(f"Scale Norm: {torch.norm(cluster_scales_q_mean - empirical_prior_scales)}")
 
     model_save_path = os.path.join(
         "/nfs/turbo/lsa-regier/scratch", 

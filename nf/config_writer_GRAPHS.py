@@ -3,13 +3,13 @@ import yaml
 import os
 import shutil
 
-use_empirical_params = [True]
+use_empirical_params = [False]
 prior_flow_type = ["MAF"]
 posterior_flow_type = ["CNF"]
 prior_flow_length_by_type = {
     "CNF": [32],  # CNF only needs one "flow length" since it doesn't use one
-    "MAF": [1, 3],
-    "NSF": [1, 3]
+    "MAF": [3],
+    # "NSF": [1, 3]
 }
 posterior_flow_length_by_type = {
     "CNF": [32],  # CNF only needs one "flow length" since it doesn't use one
@@ -22,11 +22,11 @@ hidden_layers = [
 ]
 neighborhood_size = [1]
 radius_size = [2, 2.25, 2.5, 2.75, 3]
-graph_depth = [1, 2, 3]
-graph_features = [256, 512, 1024]
-graph_conv = ["GCN", "SAGE", "GIN"]
+graph_depth = [1]
+graph_features = [512]
+graph_conv = ["GCN", "SAGE"]
 activations = ["Tanh"]
-KL_Annealing = [True, False]
+KL_Annealing = [150, 1000, False]
 
 DATASET = "DLPFC"
 config_filepath = f"config/config_{DATASET}"
@@ -117,27 +117,27 @@ for i, combo in enumerate(all_combinations):
         hidden_layers: {hidden_layers}
         num_epochs: 10000
         batch_size: -1
-        patience: {25 if use_empirical_params else 75}
+        patience: {10 if use_empirical_params else 25}
         activation: {activation}
         lr: 
           cluster_means_q_mean: 
-            lr: {0.0005 if use_empirical_params else 0.05}
+            lr: 0.001
             betas: 
               - 0.9
               - 0.999
-            lrd: {1.0 if use_empirical_params else 0.01 ** (1/1000)}
+            lrd: 1.0
           cluster_scales_q_mean: 
-            lr: {0.0001 if use_empirical_params else 0.01}
+            lr: 0.001
             betas: 
               - 0.9
               - 0.999
-            lrd: {1.0 if use_empirical_params else 0.01 ** (1/1000)}
+            lrd: 1.0
           default: 
             lr: 0.001
             betas:
               - 0.9
               - 0.999
-            lrd: {0.998 ** 0.5}
+            lrd: 1.0
             weight_decay: 1e-6
     """
 
