@@ -4,6 +4,7 @@ import os
 import shutil
 
 use_empirical_params = [False]
+learn_global_variances = [False, True]
 prior_flow_type = ["MAF"]
 posterior_flow_type = ["CNF"]
 prior_flow_length_by_type = {
@@ -54,6 +55,7 @@ for prior_ft in prior_flow_type:
             use_empirical_params,
             activations,
             KL_Annealing,
+            learn_global_variances
         )))
 
 print(f"THERE ARE {len(all_combinations)} COMBOS.")
@@ -85,6 +87,7 @@ for i, combo in enumerate(all_combinations):
     use_empirical_params = combo[11]
     activation = combo[12]
     kl_anneal = combo[13]
+    learn_global_variance = combo[14]
 
     config_yaml = f"""
     data:
@@ -100,7 +103,7 @@ for i, combo in enumerate(all_combinations):
     VI:
         empirical_prior: {use_empirical_params}
         kl_annealing: {kl_anneal}
-        learn_global_variances: False
+        learn_global_variances: {learn_global_variance}
         min_concentration: 0.001
         num_prior_samples: 1000
         num_posterior_samples: 1000
@@ -138,7 +141,7 @@ for i, combo in enumerate(all_combinations):
               - 0.9
               - 0.999
             lrd: 1.0
-            weight_decay: 1e-6
+            # weight_decay: 1e-6
     """
 
     config_file = yaml.safe_load(config_yaml)

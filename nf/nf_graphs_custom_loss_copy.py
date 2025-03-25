@@ -783,6 +783,8 @@ if __name__ == "__main__":
     # update the flow to use the gcn as the hypernet
     cluster_probs_graph_flow_dist = edit_flow_nn(config, cluster_probs_graph_flow_dist, graph)
 
+    MIN_CONCENTRATION = 0.01
+
     def model(data, annealing_factor=1.0):
 
         pyro.module("prior_flow", cluster_probs_graph_flow_dist)
@@ -802,11 +804,13 @@ if __name__ == "__main__":
             with pyro.poutine.scale(scale=annealing_factor):
                 cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_graph_flow_dist()).expand([len(data)]).to_event(1))
                 max_logit = torch.max(cluster_logits, dim=-1, keepdim=True).values
-                stable_logits = cluster_logits - max_logit
+                z_min = np.log((MIN_CONCENTRATION / (1 - MIN_CONCENTRATION)) * (config.data.num_clusters - 1))
+                stable_logits = (cluster_logits - max_logit).clamp(min=z_min)
         else:
             cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_graph_flow_dist()).expand([len(data)]).to_event(1))
             max_logit = torch.max(cluster_logits, dim=-1, keepdim=True).values
-            stable_logits = cluster_logits - max_logit
+            z_min = np.log((MIN_CONCENTRATION / (1 - MIN_CONCENTRATION)) * (config.data.num_clusters - 1))
+            stable_logits = (cluster_logits - max_logit).clamp(min=z_min)    
 
         with pyro.plate("data", len(data)):
 
@@ -904,7 +908,7 @@ if __name__ == "__main__":
                     cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
             else:
                 cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
-
+            
 
         # # We add the penalty factor here
         # cluster_probs = torch.softmax(cluster_logits, dim=-1)  # [N, K]

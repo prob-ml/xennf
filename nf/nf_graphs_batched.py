@@ -269,7 +269,7 @@ def prepare_data(config, dlpfc_sample):
     empirical_prior_means = torch.randn(config.data.num_clusters, gene_data.shape[1])
     # empirical_prior_means = torch.ones(config.data.num_clusters, gene_data.shape[1])
     empirical_prior_scales = torch.abs(torch.randn(config.data.num_clusters, gene_data.shape[1])).clamp(min=0.1)
-    # empirical_prior_scales = torch.ones(config.data.num_clusters, gene_data.shape[1]) * 0.1
+    empirical_prior_scales = torch.ones(config.data.num_clusters, gene_data.shape[1]) * 0.1
     if config.VI.empirical_prior:
         assert sum(np.unique(initial_clusters) >= 0) == config.data.num_clusters, "K doesn't match initial number of unique detected clusters."
         for i in range(config.data.num_clusters):
@@ -783,7 +783,12 @@ if __name__ == "__main__":
     # update the flow to use the gcn as the hypernet
     cluster_probs_graph_flow_dist = edit_flow_nn(config, cluster_probs_graph_flow_dist, graph)
 
+    MIN_CONCENTRATION = 0.01
+
     def model(data, annealing_factor=1.0):
+
+        # d = ZukoToPyro(cluster_probs_graph_flow_dist()).expand([len(data)])
+        # print("MODEL", d.batch_shape, d.event_shape)
 
         pyro.module("prior_flow", cluster_probs_graph_flow_dist)
         
@@ -797,18 +802,21 @@ if __name__ == "__main__":
             else:
                 # Define the means and variances of the Gaussian components
                 cluster_means = pyro.sample("cluster_means", dist.Normal(empirical_prior_means, 10.0).to_event(1))
-                cluster_scales = pyro.sample("cluster_scales", dist.LogNormal(empirical_prior_scales, 10.0).to_event(1))
-        if config.VI.kl_annealing:
-            with pyro.poutine.scale(scale=annealing_factor):
-                cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_graph_flow_dist()).expand([len(data)]).to_event(1))
-                max_logit = torch.max(cluster_logits, dim=-1, keepdim=True).values
-                stable_logits = cluster_logits - max_logit
-        else:
-            cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_graph_flow_dist()).expand([len(data)]).to_event(1))
-            max_logit = torch.max(cluster_logits, dim=-1, keepdim=True).values
-            stable_logits = cluster_logits - max_logit
+                cluster_scales = pyro.sample("cluster_scales", dist.LogNormal(empirical_prior_scales, 10.0).to_event(1))  
 
         with pyro.plate("data", len(data)):
+
+            if config.VI.kl_annealing:
+                with pyro.poutine.scale(scale=annealing_factor):
+                    cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_graph_flow_dist()).expand([len(data)]))
+                    max_logit = torch.max(cluster_logits, dim=-1, keepdim=True).values
+                    z_min = np.log((MIN_CONCENTRATION / (1 - MIN_CONCENTRATION)) * (config.data.num_clusters - 1))
+                    stable_logits = (cluster_logits - max_logit).clamp(min=z_min)
+            else:
+                cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_graph_flow_dist()).expand([len(data)]))
+                max_logit = torch.max(cluster_logits, dim=-1, keepdim=True).values
+                z_min = np.log((MIN_CONCENTRATION / (1 - MIN_CONCENTRATION)) * (config.data.num_clusters - 1))
+                stable_logits = (cluster_logits - max_logit).clamp(min=z_min)  
 
             if cluster_means.dim() == expected_total_param_dim:
                 pyro.sample(f"obs", dist.MixtureOfDiagNormals(
@@ -861,6 +869,9 @@ if __name__ == "__main__":
     )
  
     def guide(data, annealing_factor=1.0):
+
+        # d = ZukoToPyro(cluster_probs_graph_flow_dist()).expand([len(data)])
+        # print("GUIDE", d.batch_shape, d.event_shape)
         
         pyro.module("posterior_flow", cluster_probs_flow_dist)
 
@@ -894,17 +905,19 @@ if __name__ == "__main__":
             # Handle the case when kl_annealing is false
             if config.VI.kl_annealing:
                 with pyro.poutine.scale(scale=annealing_factor):
-                    cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data, constant=0.0)).to_event(1))
+                    cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data, constant=0.0)))
             else:
-                cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data, constant=0.0)).to_event(1))
+                cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data, constant=0.0)))
         else:
-            # Handle the case when kl_annealing is false
-            if config.VI.kl_annealing:
-                with pyro.poutine.scale(scale=annealing_factor):
-                    cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
-            else:
-                cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
-
+            posterior_flow = ZukoToPyro(cluster_probs_flow_dist(data))
+            with pyro.plate("data", len(data)):
+                # Handle the case when kl_annealing is false
+                if config.VI.kl_annealing:
+                    with pyro.poutine.scale(scale=annealing_factor):
+                        cluster_logits = pyro.sample("cluster_logits", posterior_flow)
+                else:
+                    cluster_logits = pyro.sample("cluster_logits", posterior_flow)
+            
 
         # # We add the penalty factor here
         # cluster_probs = torch.softmax(cluster_logits, dim=-1)  # [N, K]
