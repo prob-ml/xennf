@@ -356,6 +356,8 @@ class XeniumCluster:
             **kwargs
         ):
 
+        print(K, "SOMETHING WRONG")
+
         key_added = f'dendrogram_{groupby}'
 
         if self.dataset_name == "DLPFC":
@@ -520,7 +522,7 @@ class XeniumCluster:
 
                 non_na_mask = ~data.obs["Region"].isna()
 
-                kmeans = KMeans(n_clusters=K, n_init=20, init='random').fit(spatial_init_data[non_na_mask])
+                kmeans = KMeans(n_clusters=K, n_init=100).fit(spatial_init_data[non_na_mask])
 
                 cluster_assignments = kmeans.predict(spatial_init_data[non_na_mask])
 

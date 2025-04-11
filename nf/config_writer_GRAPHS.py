@@ -3,7 +3,7 @@ import yaml
 import os
 import shutil
 
-use_empirical_params = [False]
+use_empirical_params = [True]
 learn_global_variances = [False, True]
 prior_flow_type = ["MAF"]
 posterior_flow_type = ["CNF"]
@@ -30,6 +30,7 @@ activations = ["Tanh"]
 KL_Annealing = [150, 1000, False]
 
 DATASET = "DLPFC"
+SAMPLE = 151674
 config_filepath = f"config/config_{DATASET}"
 
 if os.path.exists(config_filepath):
@@ -92,6 +93,7 @@ for i, combo in enumerate(all_combinations):
     config_yaml = f"""
     data:
         dataset: {DATASET}
+        dlpfc_sample: {SAMPLE}
         data_dimension: {8 if DATASET == "DLPFC" else 5}
         num_clusters: 7
         resolution: {get_resolution(DATASET, init_method)}
