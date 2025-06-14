@@ -4,34 +4,34 @@ import os
 import shutil
 
 use_empirical_params = [True]
-learn_global_variances = [False, True]
-prior_flow_type = ["MAF"]
-posterior_flow_type = ["CNF"]
+learn_global_variances = [False]
+prior_flow_type = ["NSF"]
+posterior_flow_type = ["NSF"]
 prior_flow_length_by_type = {
     "CNF": [32],  # CNF only needs one "flow length" since it doesn't use one
     "MAF": [3],
-    # "NSF": [1, 3]
+    "NSF": [1]
 }
 posterior_flow_length_by_type = {
     "CNF": [32],  # CNF only needs one "flow length" since it doesn't use one
     "MAF": [16, 32, 64],
-    "NSF": [16, 32, 64]
+    "NSF": [4]
 }
 init_method = ["K-Means"]
 hidden_layers = [
     [2048, 1024, 512, 256, 128, 64, 32, 16],
 ]
 neighborhood_size = [1]
-radius_size = [2, 2.25, 2.5, 2.75, 3]
+radius_size = [6]
 graph_depth = [1]
 graph_features = [512]
-graph_conv = ["GCN", "SAGE"]
+graph_conv = ["GCN"]
 activations = ["Tanh"]
-KL_Annealing = [150, 1000, False]
+KL_Annealing = [False]
 
 DATASET = "DLPFC"
-SAMPLE = 151674
-config_filepath = f"config/config_{DATASET}"
+sample = [151507, 151508, 151509, 151510, 151669, 151670, 151671, 151672, 151673, 151674, 151675, 151676]
+config_filepath = f"config/config_{DATASET}_FINAL"
 
 if os.path.exists(config_filepath):
     shutil.rmtree(config_filepath)
@@ -56,7 +56,8 @@ for prior_ft in prior_flow_type:
             use_empirical_params,
             activations,
             KL_Annealing,
-            learn_global_variances
+            learn_global_variances,
+            sample
         )))
 
 print(f"THERE ARE {len(all_combinations)} COMBOS.")
@@ -76,6 +77,8 @@ for i, combo in enumerate(all_combinations):
 
     prior_flow_type = combo[0]
     posterior_flow_type = combo[1]
+    if prior_flow_type != posterior_flow_type:
+        continue
     prior_flow_length = combo[2]
     posterior_flow_length = combo[3]
     init_method = combo[4]
@@ -89,13 +92,14 @@ for i, combo in enumerate(all_combinations):
     activation = combo[12]
     kl_anneal = combo[13]
     learn_global_variance = combo[14]
+    sample = combo[15]
 
     config_yaml = f"""
     data:
         dataset: {DATASET}
-        dlpfc_sample: {SAMPLE}
+        dlpfc_sample: {sample}
         data_dimension: {8 if DATASET == "DLPFC" else 5}
-        num_clusters: 7
+        num_clusters: {5 if sample in (151669, 151670, 151671, 151672) else 7}
         resolution: {get_resolution(DATASET, init_method)}
         num_pcs: {8 if DATASET == "DLPFC" else 5}
         init_method: {init_method if  use_empirical_params else "None"}
@@ -109,7 +113,7 @@ for i, combo in enumerate(all_combinations):
         min_concentration: 0.001
         num_prior_samples: 1000
         num_posterior_samples: 1000
-        num_particles: 3
+        num_particles: 4
     graphs:
         depth: {graph_depth}
         width: {graph_width}
@@ -122,7 +126,7 @@ for i, combo in enumerate(all_combinations):
         hidden_layers: {hidden_layers}
         num_epochs: 10000
         batch_size: -1
-        patience: {10 if use_empirical_params else 25}
+        patience: {20 if use_empirical_params else 25}
         activation: {activation}
         lr: 
           cluster_means_q_mean: 

@@ -644,7 +644,7 @@ for epoch in range(1, NUM_EPOCHS + 1):
 # %%
 # import os
 
-# save_path = os.path.join("/nfs/turbo/lsa-regier/scratch", "roko/nf_results", "test_model")
+# save_path = os.path.join("/data/scratch/roko", "roko/nf_results", "test_model")
 
 # %%
 # pyro.get_param_store().save(save_path)

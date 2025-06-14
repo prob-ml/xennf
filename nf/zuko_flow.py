@@ -56,7 +56,8 @@ class ZukoToPyro(pyro.distributions.TorchDistribution):
 
     def __call__(self, shape: Size = ()) -> Tensor:
         if hasattr(self.dist, "rsample_and_log_prob"):  # fast sampling + scoring
-            x, self.cache[x] = self.dist.rsample_and_log_prob(shape)
+            x, logp = self.dist.rsample_and_log_prob(shape)
+            self.cache[id(x)] = logp
         elif self.has_rsample:
             x = self.dist.rsample(shape)
         else:
@@ -65,10 +66,7 @@ class ZukoToPyro(pyro.distributions.TorchDistribution):
         return x
 
     def log_prob(self, x: Tensor) -> Tensor:
-        if x in self.cache:
-            return self.cache[x]
-        else:
-            return self.dist.log_prob(x)
+        return self.cache.get(id(x), self.dist.log_prob(x))
 
     def expand(self, *args, **kwargs):
         return ZukoToPyro(self.dist.expand(*args, **kwargs))
@@ -114,10 +112,11 @@ def setup_zuko_flow(flow_type: str, num_clusters: int, flow_length: int = 1, con
                 context=context_length,
                 hidden_features=hidden_layers,
                 activation=retrieve_activation(activation),
-                # atol=1e-5, #TURN THESE UP FOR LOWER MEMORY/COMP COST, DOWN FOR BETTER ACCURACY
-                # rtol=1e-4,
+                # residual=True,
+                atol=1e-4, #TURN THESE UP FOR LOWER MEMORY/COMP COST, DOWN FOR BETTER ACCURACY
+                rtol=1e-3,
                 exact=False,
-                # normalize=True,
+                normalize=True,
             )
         case "GF":
             cluster_probs_flow_dist = zuko.flows.gaussianization.GF(
@@ -189,7 +188,9 @@ def setup_zuko_flow(flow_type: str, num_clusters: int, flow_length: int = 1, con
                 context=context_length,
                 hidden_features=hidden_layers,
                 activation=retrieve_activation(activation),
-                bins=16
+                bins=16,
+                passes=2,
+                transforms=flow_length,
             )
         case "NSF":
             cluster_probs_flow_dist = zuko.flows.spline.NSF(
@@ -198,7 +199,8 @@ def setup_zuko_flow(flow_type: str, num_clusters: int, flow_length: int = 1, con
                 hidden_features=hidden_layers,
                 activation=retrieve_activation(activation),
                 bins=16,
-                # passes=2
+                passes=2,
+                transforms=flow_length,
             )
 
     # clamping

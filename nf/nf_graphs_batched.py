@@ -64,11 +64,13 @@ class GCNFlowModel(nn.Module):
         match conv_type:
             case "GCN":
                 self.layers = nn.ModuleList()
+                if depth == 0:
+                    width = in_features
                 for _ in range(depth):
                     self.layers.append(GCNModule(in_features, width, conv_type))
                     self.layers.append(retrieve_activation(config))  # Changed to use retrieve_activation
                     in_features = width
-                self.layers.append(GCNModule(width, out_features, conv_type))
+                self.layers.append(GCNModule(width, out_features, conv_type))  # Final layer is fully connected
             case "SGCN":
                 self.layers = nn.ModuleList([
                     GCNModule(in_features, out_features, conv_type, hops=depth),
@@ -83,9 +85,9 @@ class GCNFlowModel(nn.Module):
             case "GAT":
                 NUM_HEADS = 8
                 self.layers = nn.ModuleList([
-                    GCNModule(in_features, width, neighborhood_size=1, conv="GAT", num_heads=NUM_HEADS),
+                    GCNModule(in_features, width, conv="GAT", num_heads=NUM_HEADS),
                     retrieve_activation(config),  # Changed to use retrieve_activation
-                    GCNModule(width * NUM_HEADS, out_features, neighborhood_size=1, conv="GAT", num_heads=1)
+                    GCNModule(width * NUM_HEADS, out_features, conv="GAT", num_heads=1)
                 ])
             case "GIN":
                 self.layers = nn.ModuleList()
@@ -190,6 +192,9 @@ def retrieve_activation(config):
 
 def custom_cluster_initialization(original_adata, method, K=17, num_pcs=3, resolution=0.45, dataset="SYNTHETIC", neighborhood_size=1):
 
+    # get PCs
+    original_adata.pca(original_adata.xenium_spot_data, num_pcs)
+
     # this is important for graph based methods
     original_adata.generate_neighborhood_graph(original_adata.xenium_spot_data, n_neighbors=1+4*config.data.neighborhood_size, n_pcs=num_pcs, plot_pcas=False)
 
@@ -209,8 +214,9 @@ def custom_cluster_initialization(original_adata, method, K=17, num_pcs=3, resol
     elif method == "Louvain":
         initial_clusters = original_adata.Louvain(original_adata.xenium_spot_data, resolutions=[resolution], save_plot=False, K=K)[resolution]
     elif method == "mclust":
-        original_adata.pca(original_adata.xenium_spot_data, num_pcs)
         initial_clusters = original_adata.mclust(original_adata.xenium_spot_data, G=K, model_name = "EEE")
+    elif method == "phenograph":
+        initial_clusters = original_adata.pheno(original_adata.xenium_spot_data, save_plot=True, K=K)
     elif method == "random":
         initial_clusters = np.random.randint(0, K, size=original_adata.xenium_spot_data.X.shape[0])
     else:
@@ -218,7 +224,7 @@ def custom_cluster_initialization(original_adata, method, K=17, num_pcs=3, resol
 
     return initial_clusters
 
-def prepare_data(config, dlpfc_sample):
+def prepare_data(config):
 
     if config.data.dataset == "SYNTHETIC":
         gene_data, spatial_locations, original_adata, TRUE_PRIOR_WEIGHTS = prepare_synthetic_data(
@@ -226,11 +232,16 @@ def prepare_data(config, dlpfc_sample):
             data_dimension=config.data.data_dimension
         )
     elif config.data.dataset == "DLPFC":
-        gene_data, spatial_locations, original_adata = prepare_DLPFC_data(dlpfc_sample, num_pcs=config.data.num_pcs)
+        gene_data, spatial_locations, original_adata = prepare_DLPFC_data(config.data.dlpfc_sample, num_pcs=config.data.num_pcs)
         TRUE_PRIOR_WEIGHTS = None
 
     gene_data = StandardScaler().fit_transform(gene_data)
     data = torch.tensor(gene_data).float()
+
+    # rows = spatial_locations["row"].astype(int)
+    # columns = spatial_locations["col"].astype(int)
+
+    # print(rows.describe(), columns.describe())
 
     if config.data.init_method != "None":
         
@@ -270,7 +281,7 @@ def prepare_data(config, dlpfc_sample):
     empirical_prior_means = torch.randn(config.data.num_clusters, gene_data.shape[1])
     # empirical_prior_means = torch.ones(config.data.num_clusters, gene_data.shape[1])
     empirical_prior_scales = torch.abs(torch.randn(config.data.num_clusters, gene_data.shape[1])).clamp(min=0.1)
-    empirical_prior_scales = torch.ones(config.data.num_clusters, gene_data.shape[1])
+    # empirical_prior_scales = torch.ones(config.data.num_clusters, gene_data.shape[1])
     if config.VI.empirical_prior:
         assert sum(np.unique(initial_clusters) >= 0) == config.data.num_clusters, "K doesn't match initial number of unique detected clusters."
         for i in range(config.data.num_clusters):
@@ -420,6 +431,7 @@ def save_filepath(config):
     return total_file_path
 
 def edit_flow_nn(config, flow, graph):
+    NUM_BINS = 16
     match type(flow):
         case zuko.flows.continuous.CNF:
             network = GCNFlowModel(
@@ -447,13 +459,13 @@ def edit_flow_nn(config, flow, graph):
             network = GCNFlowModel(
                 original_graph=graph,
                 in_features=config.data.num_clusters,  # Corrected in_features for neural spline flow
-                out_features=config.data.num_clusters,      # Corrected out_features for neural spline flow
+                out_features=config.data.num_clusters * (3 * NUM_BINS - 1),  # Corrected out_features for neural spline flow
                 conv_type=config.graphs.gconv_type,
                 depth=config.graphs.depth,
                 width=config.graphs.width,
             )
 
-            flow.transform.transforms.insert(0, copy.deepcopy(flow.transform.transforms[0]))
+            # flow.transform.transforms.insert(0, copy.deepcopy(flow.transform.transforms[0]))
             flow.transform.transforms[0].hyper = network
         case _:
             # Handle default case
@@ -631,6 +643,8 @@ def pick_device(gpu_arg="auto", max_load=0.10, max_mem=0.15):
       - integer string -> That GPU index if available
     Returns a torch.device or raises an error if not possible.
     """
+
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3,4,5,6,7"
     if not torch.cuda.is_available() or gpu_arg.lower() in ["cpu", "none"]:
         print("CUDA not available or CPU requested. Using CPU.")
         return torch.device("cpu")
@@ -706,7 +720,7 @@ if __name__ == "__main__":
     torch.set_printoptions(sci_mode=False)
     expected_total_param_dim = 2 # K x D
     warnings.filterwarnings("ignore")
-    config = OmegaConf.load(f'config/config_DLPFC/config{args.config_name}.yaml')
+    config = OmegaConf.load(f'config/config_DLPFC_FINAL/config{args.config_name}.yaml')
     # don't run model again if it exists 
     if os.path.exists(save_filepath(config)):
         print("Directory already exists. Ending execution.")
@@ -719,7 +733,7 @@ if __name__ == "__main__":
         empirical_prior_means, 
         empirical_prior_scales, 
         true_prior_weights
-    ) = prepare_data(config, config.data.dlpfc_sample)
+    ) = prepare_data(config)
 
     cluster_probs_graph_flow_dist = setup_zuko_flow(
         flow_type=config.flows.prior_flow_type,
@@ -818,7 +832,7 @@ if __name__ == "__main__":
         pyro.module("prior_flow", cluster_probs_graph_flow_dist)
         
         with pyro.plate("clusters", config.data.num_clusters):
-            if config.VI.kl_annealing and not config.VI.empirical_prior:
+            if config.VI.kl_annealing:
                 with pyro.poutine.scale(scale=annealing_factor):
                     print(annealing_factor)
                     # Define the means and variances of the Gaussian components
@@ -909,7 +923,7 @@ if __name__ == "__main__":
                 cluster_scales_q_scale = pyro.param("cluster_scales_q_scale", torch.ones_like(empirical_prior_scales) * 0.0001, constraint=dist.constraints.positive)
                 
                 # Check if KL annealing is enabled
-                if config.VI.kl_annealing and not config.VI.empirical_prior:
+                if config.VI.kl_annealing:
                     with pyro.poutine.scale(scale=annealing_factor):
                         cluster_means = pyro.sample("cluster_means", dist.Normal(cluster_means_q_mean, cluster_means_q_scale).to_event(1))
                         cluster_scales = pyro.sample("cluster_scales", dist.LogNormal(cluster_scales_q_mean, cluster_scales_q_scale).to_event(1))
@@ -918,7 +932,7 @@ if __name__ == "__main__":
                     cluster_scales = pyro.sample("cluster_scales", dist.LogNormal(cluster_scales_q_mean, cluster_scales_q_scale).to_event(1))
             else:
                 # Check if KL annealing is enabled for Delta sampling
-                if config.VI.kl_annealing  and not config.VI.empirical_prior:
+                if config.VI.kl_annealing :
                     with pyro.poutine.scale(scale=annealing_factor):
                         cluster_means = pyro.sample("cluster_means", dist.Delta(cluster_means_q_mean).to_event(1))
                         cluster_scales = pyro.sample("cluster_scales", dist.Delta(cluster_scales_q_mean).to_event(1))
@@ -959,7 +973,7 @@ if __name__ == "__main__":
         # print(f"Scale Norm: {torch.norm(cluster_scales_q_mean - empirical_prior_scales)}")
 
     model_save_path = os.path.join(
-        "/nfs/turbo/lsa-regier/scratch", 
+        "/data/scratch/roko", 
         "roko/nf_results",
         save_filepath(config)
     )

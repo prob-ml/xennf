@@ -15,6 +15,7 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
 from mclustpy import mclustpy
+from typing import Union
 
 from copy import deepcopy
 
@@ -26,13 +27,14 @@ class XeniumCluster:
     SPOT_SIZE = 100
     THIRD_DIM = False
 
-    def __init__(self, data: pd.DataFrame, dataset_name: str, spot_size: int = 100) -> None:
+    def __init__(self, data: pd.DataFrame, dataset_name: str, spot_size: int = 100, dlpfc_section: Union[int, None] = None) -> None:
         
         self.raw_xenium_data = data
         self.xenium_spot_data = None
         self.dataset_name = dataset_name
         self.SPOT_SIZE = spot_size
         self.spot_data_location = f"data/spot_data/{dataset_name}"
+        self.dlpfc_sample = dlpfc_section
 
     def target_dir_setter(self, method, **kwargs):
         if self.dataset_name == "SYNTHETIC":
@@ -50,7 +52,7 @@ class XeniumCluster:
             )
         elif self.dataset_name == "DLPFC":
             self.target_dir = os.path.join(
-                f"results/{self.dataset_name}/{method}/",
+                f"results/{self.dataset_name + str(self.dlpfc_sample)}/{method}/",
                 "/".join([f"{key}={value}" for key, value in kwargs.items()]),
                 "clusters"
             )
@@ -345,6 +347,98 @@ class XeniumCluster:
 
         return {resolution: data.obs[f'louvain_{resolution}'].values.astype(int) for resolution in resolutions}
 
+    def pheno(
+            self,
+            data: ad.AnnData,
+            K: int,
+            embedding: str = "umap", 
+            **kwargs
+        ):
+
+            key_added = 'pheno'
+
+            if self.dataset_name == "DLPFC":
+
+                non_na_mask = ~data.obs["Region"].isna()
+                masked_data_clusters, _, _ = sc.external.tl.phenograph(data[non_na_mask], k=150, key_added=key_added, copy=True)
+
+                data.obs['pheno'] = np.zeros_like(data.obs.index, dtype=int) - 1  # Initialize with -1 for non-NA regions
+                data.obs.loc[non_na_mask, 'pheno'] = masked_data_clusters
+                print(data.obs['pheno'].unique())
+
+            else:
+                # For non-DLPFC data, directly assign the results
+                clusters, _, _ = sc.external.tl.phenograph(data, k=120, key_added=key_added, copy=True)
+                print(np.unique(clusters))
+                data.obs['pheno'] = clusters
+
+            self.target_dir_setter("Phenograph", K=K)
+            os.makedirs(self.target_dir, exist_ok=True)
+            
+            # Extracting row, col, and cluster values from the dataframe
+            rows = torch.tensor(data.obs["row"].astype(int))
+            cols = torch.tensor(data.obs["col"].astype(int))
+            clusters = torch.tensor(data.obs['pheno'].astype(int))
+            num_clusters = clusters.unique().size(0)
+
+            num_rows = max(rows) + 1
+            num_cols = max(cols) + 1
+
+            cluster_grid = torch.zeros((num_rows, num_cols), dtype=torch.int)
+
+            cluster_grid[rows, cols] = torch.tensor(clusters, dtype=torch.int) + 1
+
+            if self.dataset_name == "SYNTHETIC":
+                colormap = plt.cm.get_cmap('viridis', num_clusters)
+            elif self.dataset_name == "DLPFC":
+                colors = plt.cm.get_cmap('rainbow', num_clusters)
+                grey_color = [0.5, 0.5, 0.5, 1]  # Medium gray for unused cluster
+                colormap_colors = np.vstack((grey_color, colors(np.linspace(0, 1, num_clusters-1))))
+                colormap = ListedColormap(colormap_colors)
+            else:
+                colors = plt.cm.get_cmap('rainbow', num_clusters + 1)
+                colormap_colors = np.vstack(([[1, 1, 1, 1]], colors(np.linspace(0, 1, num_clusters))))
+                colormap = ListedColormap(colormap_colors)
+
+            plt.figure(figsize=(6, 6))
+            if self.dataset_name == "DLPFC":
+
+                rows, cols, clusters = rows.cpu(), cols.cpu(), clusters.cpu()
+
+                # Create mapping between region names and integer codes
+                region_to_int = {name: code + 1 for code, name in enumerate(data.obs["Region"].cat.categories)}
+                int_to_region = {code + 1: name for code, name in enumerate(data.obs["Region"].cat.categories)}
+
+                # Scatter plot
+                plt.scatter(cols, rows, c=clusters+1, cmap=colormap, marker='h', s=12)#, edgecolors='white')
+
+                # Calculate padding for the axis limits
+                x_padding = (cols.max() - cols.min()) * 0.02  # 2% padding
+                y_padding = (rows.max() - rows.min()) * 0.02        # 2% padding
+
+                # Set axis limits with padding
+                plt.xlim(cols.min() - x_padding, cols.max() + x_padding)
+                plt.ylim(rows.min() - y_padding, rows.max() + y_padding)
+
+                # Force square appearance by stretching the y-axis
+                plt.gca().set_aspect((cols.max() - cols.min() + 2 * x_padding) / 
+                                    (rows.max() - rows.min() + 2 * y_padding))  # Adjust for padded ranges
+                plt.gca().invert_yaxis()  # Maintain spatial orientation
+                # Add colorbar and title
+                plt.colorbar(ticks=range(num_clusters), label="True Label").set_ticklabels(["NA"] + list(int_to_region.values()))
+                plt.tight_layout()  # Minimize padding around the plot
+            else:
+
+                plt.imshow(cluster_grid.cpu(), cmap=colormap, interpolation='nearest', origin='lower')
+                plt.colorbar(ticks=range(num_clusters + 1), label='Cluster Values')
+            plt.title(f'Cluster Assignment with Phenograph')
+
+            plt.savefig(
+                f"{self.target_dir}/K={K}.png"
+            )
+
+            return data.obs[key_added].values.astype(int)
+
     def Hierarchical(
             self,
             data: ad.AnnData,
@@ -355,8 +449,6 @@ class XeniumCluster:
             use_pca = False,
             **kwargs
         ):
-
-        print(K, "SOMETHING WRONG")
 
         key_added = f'dendrogram_{groupby}'
 

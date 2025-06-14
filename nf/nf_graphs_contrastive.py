@@ -41,6 +41,47 @@ from data import prepare_DLPFC_data, prepare_synthetic_data, prepare_Xenium_data
 from zuko_flow import setup_zuko_flow, ZukoToPyro
 from omegaconf import OmegaConf
 
+import torch.nn.functional as F
+from pyro.infer import TraceMeanField_ELBO
+
+import torch
+import torch.nn.functional as F
+from pyro.infer import TraceMeanField_ELBO
+
+# --- Custom ELBO that adds a contrastive loss ---
+class ContrastiveELBO(TraceMeanField_ELBO):
+    def __init__(self, spatial_coords, contrastive_weight=1.0, neighbor_radius=1.5, **kwargs):
+        super().__init__(**kwargs)
+        self.spatial_coords = spatial_coords  # Should have shape (N, coord_dim)
+        self.contrastive_weight = contrastive_weight
+        self.neighbor_radius = neighbor_radius
+
+    def compute_contrastive_loss(self, cluster_logits):
+        # Assume cluster_logits is of shape (N, num_clusters)
+        probs = F.softmax(cluster_logits, dim=-1)  # (N, num_clusters)
+        # Similarity matrix: (N, N)
+        similarity = torch.matmul(probs, probs.T)
+        # Compute pairwise Euclidean distances between spatial coordinates (N, N)
+        distances = torch.cdist(self.spatial_coords.float(), self.spatial_coords.float(), p=2)
+        # Define masks: points within neighbor_radius are "positive" pairs.
+        pos_mask = distances < self.neighbor_radius
+        neg_mask = distances >= self.neighbor_radius
+        # For positive pairs, we want similarity close to 1; for negatives, lower similarity.
+        pos_loss = (1 - similarity)[pos_mask].pow(2).mean()
+        neg_loss = F.relu(similarity[neg_mask] - 1.0).pow(2).mean()
+        return pos_loss + neg_loss
+
+    def _differentiable_loss_particle(self, model, guide, *args, **kwargs):
+        # Use Pyro's built-in _get_trace to generate model and guide traces.
+        model_trace, guide_trace = self._get_trace(model, guide, args, kwargs)
+        base_loss = self._compute_trace_loss(model_trace, guide_trace)
+        if "cluster_logits" not in guide_trace.nodes:
+            raise ValueError("The guide must sample a variable named 'cluster_logits'.")
+        cluster_logits = guide_trace.nodes["cluster_logits"]["value"]
+        contrast_loss = self.compute_contrastive_loss(cluster_logits)
+        total_loss = base_loss + self.contrastive_weight * contrast_loss
+        return total_loss
+
 # Set seeds for all libraries
 seed = 42
 np.random.seed(seed)
@@ -83,9 +124,9 @@ class GCNFlowModel(nn.Module):
             case "GAT":
                 NUM_HEADS = 8
                 self.layers = nn.ModuleList([
-                    GCNModule(in_features, width, neighborhood_size=1, conv="GAT", num_heads=NUM_HEADS),
+                    GCNModule(in_features, width, conv="GAT", num_heads=NUM_HEADS),
                     retrieve_activation(config),  # Changed to use retrieve_activation
-                    GCNModule(width * NUM_HEADS, out_features, neighborhood_size=1, conv="GAT", num_heads=1)
+                    GCNModule(width * NUM_HEADS, out_features, conv="GAT", num_heads=1)
                 ])
             case "GIN":
                 self.layers = nn.ModuleList()
@@ -117,8 +158,8 @@ class GCNFlowModel(nn.Module):
             if isinstance(layer, GCNModule):
                 if self.conv_type == "MoNeT":
                     x = layer(x, self.edge_index, edge_attr=self.edge_attr)
-                # elif self.conv_type == "GCN":
-                #     x = layer(x, self.edge_index, edge_weights=self.edge_weights)
+                elif self.conv_type == "GCN":
+                    x = layer(x, self.edge_index, edge_weights=self.edge_weights)
                 else:
                     x = layer(x, self.edge_index)
             else:
@@ -201,9 +242,9 @@ def custom_cluster_initialization(original_adata, method, K=17, num_pcs=3, resol
             initial_clusters = original_adata.KMeans(original_adata.xenium_spot_data, save_plot=False, K=K, include_spatial=False, use_pca=False)            
     elif method == "Hierarchical":
         if dataset == "DLPFC":
-            initial_clusters = original_adata.Hierarchical(original_adata.xenium_spot_data, save_plot=True, num_clusters=K, use_pca=True, include_spatial=False)
+            initial_clusters = original_adata.Hierarchical(original_adata.xenium_spot_data, save_plot=True, K=K, use_pca=True, include_spatial=False)
         else:
-            initial_clusters = original_adata.Hierarchical(original_adata.xenium_spot_data, save_plot=True, num_clusters=K, use_pca=True, include_spatial=False)
+            initial_clusters = original_adata.Hierarchical(original_adata.xenium_spot_data, save_plot=True, K=K, use_pca=True, include_spatial=False)
     elif method == "Leiden":
         initial_clusters = original_adata.Leiden(original_adata.xenium_spot_data, resolutions=[resolution], save_plot=False, K=K)[resolution]
     elif method == "Louvain":
@@ -233,6 +274,7 @@ def prepare_data(config, dlpfc_sample):
     data = torch.tensor(gene_data).float()
 
     if config.data.init_method != "None":
+        
         initial_clusters = custom_cluster_initialization(original_adata, config.data.init_method, K=config.data.num_clusters, num_pcs=config.data.num_pcs, resolution=config.data.resolution, dataset=config.data.dataset, neighborhood_size=config.data.neighborhood_size)
 
         if config.data.dataset == "SYNTHETIC":
@@ -269,7 +311,7 @@ def prepare_data(config, dlpfc_sample):
     empirical_prior_means = torch.randn(config.data.num_clusters, gene_data.shape[1])
     # empirical_prior_means = torch.ones(config.data.num_clusters, gene_data.shape[1])
     empirical_prior_scales = torch.abs(torch.randn(config.data.num_clusters, gene_data.shape[1])).clamp(min=0.1)
-    # empirical_prior_scales = torch.ones(config.data.num_clusters, gene_data.shape[1]) * 0.1
+    # empirical_prior_scales = torch.ones(config.data.num_clusters, gene_data.shape[1])
     if config.VI.empirical_prior:
         assert sum(np.unique(initial_clusters) >= 0) == config.data.num_clusters, "K doesn't match initial number of unique detected clusters."
         for i in range(config.data.num_clusters):
@@ -305,8 +347,18 @@ def train(
     scheduler = ClippedAdam(per_param_callable_single_optim)
 
     # Setup the inference algorithm
-    svi = SVI(model, guide, scheduler, loss=TraceMeanField_ELBO(num_particles=config.VI.num_particles, vectorize_particles=True))
-    
+    print("Model type:", type(model))
+    print("Guide type:", type(guide))
+    coords = torch.tensor(spatial_locations[["row", "col"]].values).float().to(data.device)
+    contrastive_loss = ContrastiveELBO(
+        spatial_coords=coords,
+        contrastive_weight=1.0,
+        neighbor_radius=3.0,
+        num_particles=config.VI.num_particles,
+        vectorize_particles=True
+    )
+    svi = SVI(model, guide, scheduler, loss=contrastive_loss)
+        
     # ATTEMPT AT CYCLING WHAT TO LEARN
     # def per_param_callable_mean_optim(param_name):
     #     if 'cluster_means_q_mean' in param_name:
@@ -356,7 +408,7 @@ def train(
         # )
         if epoch % 10 == 0 or epoch == 1:
             with torch.no_grad():  # Ensure no backpropagation graphs are used
-                cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
+                cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)))
                 cluster_assignments_posterior = torch.argmax(cluster_logits, dim=1)
 
                 if config.data.dataset == "DLPFC":
@@ -399,7 +451,7 @@ def train(
 
 def save_filepath(config):
     total_file_path = os.path.join(
-        "results", config.data.dataset, "XenNF", 
+        "results", config.data.dataset + (str(config.data.dlpfc_sample) if config.data.dataset == "DLPFC" else ""), "XenNF", 
         f"DATA_DIM={config.data.data_dimension}", 
         f"K={config.data.num_clusters}", 
         f"INIT={config.data.init_method}",
@@ -677,7 +729,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train the normalizing flow or load existing parameters.")
     parser.add_argument("-l", "--load_model", action="store_true", default=False, help="Load a pre-trained model.")
     parser.add_argument("-n", "--config_name", default="0", help="The name of the config to use.")
-    parser.add_argument("-d", "--dlpfc_sample", type=int, default=151673, help="DLPFC Sample #")
+    parser.add_argument("-d", "--dlpfc_sample", type=int, default=151674, help="DLPFC Sample #")
     args = parser.parse_args()
     device = pick_device("auto")
 
@@ -718,14 +770,14 @@ if __name__ == "__main__":
         empirical_prior_means, 
         empirical_prior_scales, 
         true_prior_weights
-    ) = prepare_data(config, args.dlpfc_sample)
+    ) = prepare_data(config, config.data.dlpfc_sample)
 
     cluster_probs_graph_flow_dist = setup_zuko_flow(
         flow_type=config.flows.prior_flow_type,
         flow_length=config.flows.prior_flow_length,
         num_clusters=config.data.num_clusters,
         context_length=0,
-        hidden_layers=(128, 128),
+        hidden_layers=(256, 256),
         activation="Tanh" if not hasattr(config.flows, "activation") else config.flows.activation
     )
 
@@ -752,7 +804,7 @@ if __name__ == "__main__":
         edge_attr = torch.tensor(edge_attr, dtype=torch.float32)
 
         # if using edge weights, set a max value (1.0) so that weights don't explode
-        edge_weights = (1.0 / distances.clamp(min=1e-6)).clamp(max=1.0)
+        edge_weights = (1.0 / (1.0 + distances))
         
         # Print summary metrics about the graph
         num_nodes = positions.shape[0]
@@ -773,8 +825,32 @@ if __name__ == "__main__":
         positions = torch.tensor(spatial_locations.to_numpy()).float()
         edge_index = pyg.nn.knn_graph(positions, k=1+4*config.data.neighborhood_size, loop=True)
 
-        input_x = torch.tensor(original_adata.xenium_spot_data.X, dtype=torch.float32)
-        graph = Data(x=data, edge_index=edge_index)
+                # Calculate edge attributes: polar angle and distance
+        edge_attr = []
+        node1_positions = positions[edge_index[0]]
+        node2_positions = positions[edge_index[1]]
+        distances = torch.norm(node2_positions - node1_positions, dim=1) / config.data.radius # Calculate distances
+        angles = torch.atan2(node2_positions[:, 1] - node1_positions[:, 1], node2_positions[:, 0] - node1_positions[:, 0]) / (torch.pi / 2)  # Calculate polar angles
+        degrees = torch.bincount(edge_index.flatten(), minlength=positions.shape[0])
+        edge_attr = torch.stack((angles, distances, degrees[edge_index[0]], degrees[edge_index[1]]), dim=1)  # Store angles and distances as tensor
+
+        edge_attr = torch.tensor(edge_attr, dtype=torch.float32)
+
+        # if using edge weights, set a max value (1.0) so that weights don't explode
+        edge_weights = (1.0 / (1.0 + distances))
+        
+        # Print summary metrics about the graph
+        num_nodes = positions.shape[0]
+        num_edges = edge_index.shape[1]
+        avg_degree = num_edges / num_nodes if num_nodes > 0 else 0
+        density = num_edges / (num_nodes * (num_nodes - 1)) if num_nodes > 1 else 0
+        
+        print(f"Number of nodes in the graph: {num_nodes}")
+        print(f"Number of edges in the graph: {num_edges}")
+        print(f"Average degree of the graph: {avg_degree:.2f}")
+        print(f"Density of the graph: {density:.4f}")
+
+        graph = Data(x=data, edge_index=edge_index, edge_attr=edge_attr, edge_weights=edge_weights)
 
     # we are modelling over the whole graph
     if config.flows.batch_size == -1:
@@ -783,12 +859,17 @@ if __name__ == "__main__":
     # update the flow to use the gcn as the hypernet
     cluster_probs_graph_flow_dist = edit_flow_nn(config, cluster_probs_graph_flow_dist, graph)
 
-    def model(data, annealing_factor=1.0):
+    MIN_CONCENTRATION = 0.01
+
+    def model(data, annealing_factor=1.0, **kwargs):
+
+        # d = ZukoToPyro(cluster_probs_graph_flow_dist()).expand([len(data)])
+        # print("MODEL", d.batch_shape, d.event_shape)
 
         pyro.module("prior_flow", cluster_probs_graph_flow_dist)
         
         with pyro.plate("clusters", config.data.num_clusters):
-            if config.VI.kl_annealing:
+            if config.VI.kl_annealing and not config.VI.empirical_prior:
                 with pyro.poutine.scale(scale=annealing_factor):
                     print(annealing_factor)
                     # Define the means and variances of the Gaussian components
@@ -797,18 +878,21 @@ if __name__ == "__main__":
             else:
                 # Define the means and variances of the Gaussian components
                 cluster_means = pyro.sample("cluster_means", dist.Normal(empirical_prior_means, 10.0).to_event(1))
-                cluster_scales = pyro.sample("cluster_scales", dist.LogNormal(empirical_prior_scales, 10.0).to_event(1))
-        if config.VI.kl_annealing:
-            with pyro.poutine.scale(scale=annealing_factor):
-                cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_graph_flow_dist()).expand([len(data)]).to_event(1))
-                max_logit = torch.max(cluster_logits, dim=-1, keepdim=True).values
-                stable_logits = cluster_logits - max_logit
-        else:
-            cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_graph_flow_dist()).expand([len(data)]).to_event(1))
-            max_logit = torch.max(cluster_logits, dim=-1, keepdim=True).values
-            stable_logits = cluster_logits - max_logit
+                cluster_scales = pyro.sample("cluster_scales", dist.LogNormal(empirical_prior_scales, 10.0).to_event(1))  
 
         with pyro.plate("data", len(data)):
+
+            if config.VI.kl_annealing:
+                with pyro.poutine.scale(scale=annealing_factor):
+                    cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_graph_flow_dist()))
+                    max_logit = torch.max(cluster_logits, dim=-1, keepdim=True).values
+                    z_min = np.log((MIN_CONCENTRATION / (1 - MIN_CONCENTRATION)) * (config.data.num_clusters - 1))
+                    stable_logits = (cluster_logits - max_logit).clamp(min=z_min)
+            else:
+                cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_graph_flow_dist()))
+                max_logit = torch.max(cluster_logits, dim=-1, keepdim=True).values
+                z_min = np.log((MIN_CONCENTRATION / (1 - MIN_CONCENTRATION)) * (config.data.num_clusters - 1))
+                stable_logits = (cluster_logits - max_logit).clamp(min=z_min)  
 
             if cluster_means.dim() == expected_total_param_dim:
                 pyro.sample(f"obs", dist.MixtureOfDiagNormals(
@@ -860,7 +944,10 @@ if __name__ == "__main__":
         activation="Tanh" if not hasattr(config.flows, "activation") else config.flows.activation
     )
  
-    def guide(data, annealing_factor=1.0):
+    def guide(data, annealing_factor=1.0, **kwargs):
+
+        # d = ZukoToPyro(cluster_probs_graph_flow_dist()).expand([len(data)])
+        # print("GUIDE", d.batch_shape, d.event_shape)
         
         pyro.module("posterior_flow", cluster_probs_flow_dist)
 
@@ -869,11 +956,11 @@ if __name__ == "__main__":
             cluster_means_q_mean = pyro.param("cluster_means_q_mean", empirical_prior_means + torch.randn_like(empirical_prior_means) * 0.15)
             cluster_scales_q_mean = pyro.param("cluster_scales_q_mean", empirical_prior_scales + torch.randn_like(empirical_prior_scales) * 0.03, constraint=dist.constraints.positive)
             if config.VI.learn_global_variances:
-                cluster_means_q_scale = pyro.param("cluster_means_q_scale", torch.ones_like(empirical_prior_means) * 0.05, constraint=dist.constraints.positive)
-                cluster_scales_q_scale = pyro.param("cluster_scales_q_scale", torch.ones_like(empirical_prior_scales) * 0.025, constraint=dist.constraints.positive)
+                cluster_means_q_scale = pyro.param("cluster_means_q_scale", torch.ones_like(empirical_prior_means) * 0.0001, constraint=dist.constraints.positive)
+                cluster_scales_q_scale = pyro.param("cluster_scales_q_scale", torch.ones_like(empirical_prior_scales) * 0.0001, constraint=dist.constraints.positive)
                 
                 # Check if KL annealing is enabled
-                if config.VI.kl_annealing:
+                if config.VI.kl_annealing and not config.VI.empirical_prior:
                     with pyro.poutine.scale(scale=annealing_factor):
                         cluster_means = pyro.sample("cluster_means", dist.Normal(cluster_means_q_mean, cluster_means_q_scale).to_event(1))
                         cluster_scales = pyro.sample("cluster_scales", dist.LogNormal(cluster_scales_q_mean, cluster_scales_q_scale).to_event(1))
@@ -882,7 +969,7 @@ if __name__ == "__main__":
                     cluster_scales = pyro.sample("cluster_scales", dist.LogNormal(cluster_scales_q_mean, cluster_scales_q_scale).to_event(1))
             else:
                 # Check if KL annealing is enabled for Delta sampling
-                if config.VI.kl_annealing:
+                if config.VI.kl_annealing  and not config.VI.empirical_prior:
                     with pyro.poutine.scale(scale=annealing_factor):
                         cluster_means = pyro.sample("cluster_means", dist.Delta(cluster_means_q_mean).to_event(1))
                         cluster_scales = pyro.sample("cluster_scales", dist.Delta(cluster_scales_q_mean).to_event(1))
@@ -894,17 +981,19 @@ if __name__ == "__main__":
             # Handle the case when kl_annealing is false
             if config.VI.kl_annealing:
                 with pyro.poutine.scale(scale=annealing_factor):
-                    cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data, constant=0.0)).to_event(1))
+                    cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data, constant=0.0)))
             else:
-                cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data, constant=0.0)).to_event(1))
+                cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data, constant=0.0)))
         else:
-            # Handle the case when kl_annealing is false
-            if config.VI.kl_annealing:
-                with pyro.poutine.scale(scale=annealing_factor):
-                    cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
-            else:
-                cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)).to_event(1))
-
+            posterior_flow = ZukoToPyro(cluster_probs_flow_dist(data))
+            with pyro.plate("data", len(data)):
+                # Handle the case when kl_annealing is false
+                if config.VI.kl_annealing:
+                    with pyro.poutine.scale(scale=annealing_factor):
+                        cluster_logits = pyro.sample("cluster_logits", posterior_flow)
+                else:
+                    cluster_logits = pyro.sample("cluster_logits", posterior_flow)
+            
 
         # # We add the penalty factor here
         # cluster_probs = torch.softmax(cluster_logits, dim=-1)  # [N, K]

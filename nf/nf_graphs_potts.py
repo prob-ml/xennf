@@ -713,7 +713,7 @@ if __name__ == "__main__":
         )
 
     model_save_path = os.path.join(
-        "/nfs/turbo/lsa-regier/scratch", 
+        "/data/scratch/roko", 
         "roko/nf_results",
         save_filepath(config)
     )

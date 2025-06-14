@@ -533,19 +533,19 @@ if __name__ == "__main__":
     if torch.cuda.is_available():
         print("YAY! GPU available :3")
         torch.set_default_tensor_type(torch.cuda.FloatTensor)
-        # # Get all available GPUs sorted by memory usage (lowest first)
-        # available_gpus = GPUtil.getAvailable(order='memory', limit=1)
+        # Get all available GPUs sorted by memory usage (lowest first)
+        available_gpus = GPUtil.getAvailable(order='memory', limit=1)
         
-        # if available_gpus:
-        #     selected_gpu = available_gpus[0]
+        if available_gpus:
+            selected_gpu = available_gpus[0]
             
-        #     # Set the GPU with the lowest memory usage
-        #     torch.cuda.set_device(selected_gpu)
-        #     torch.set_default_tensor_type(torch.cuda.FloatTensor)
+            # Set the GPU with the lowest memory usage
+            torch.cuda.set_device(selected_gpu)
+            torch.set_default_tensor_type(torch.cuda.FloatTensor)
             
-        #     print(f"Using GPU: {selected_gpu} with the lowest memory usage.")
-        # else:
-        #     print("No GPUs available with low memory usage.")
+            print(f"Using GPU: {selected_gpu} with the lowest memory usage.")
+        else:
+            print("No GPUs available with low memory usage.")
     else:
         print("No GPU available :(")
 
@@ -707,7 +707,7 @@ if __name__ == "__main__":
         print(f"Scale Norm: {torch.norm(cluster_scales_q_mean - empirical_prior_scales)}")
 
     model_save_path = os.path.join(
-        "/nfs/turbo/lsa-regier/scratch", 
+        "/data/scratch/roko", 
         "roko/nf_results",
         save_filepath(config)
     )

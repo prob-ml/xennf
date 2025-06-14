@@ -5,7 +5,7 @@ import pandas as pd
 from torch import Size, Tensor
 import pyro
 from pyro.infer import SVI, Trace_ELBO, TraceMeanField_ELBO
-from pyro.optim import Adam, PyroOptim
+from pyro.optim import Adam, ClippedAdam, PyroOptim
 
 import pyro.distributions as dist
 import pyro.distributions.transforms as T
@@ -199,6 +199,7 @@ def prepare_data(config):
             json.dump(cluster_metrics, fp)
 
     elif config.data.dataset == "DLPFC":
+
         # Create a DataFrame for easier handling
         cluster_data = pd.DataFrame({
             'ClusterAssignments': initial_clusters,
@@ -301,20 +302,23 @@ def train(
         true_prior_weights=None
     ):
 
+    batch_size = config.flows.batch_size
+    if batch_size == -1:
+        config.flows.batch_size = len(data)
+        batch_size = len(data)
+
     NUM_EPOCHS = config.flows.num_epochs
     NUM_BATCHES = int(math.ceil(data.shape[0] / config.flows.batch_size))
 
-    def per_param_callable(param_name):
-        if param_name == 'cluster_means_q_mean':
-            return {"lr": config.flows.lr, "betas": (0.9, 0.999)}
-        elif param_name == 'cluster_scales_q_mean':
-            return {"lr": config.flows.lr, "betas": (0.9, 0.999)}
-        elif "logit" in param_name:
-            return {"lr": config.flows.lr, "betas": (0.9, 0.999)}
+    def per_param_callable_single_optim(param_name):
+        if 'cluster_means_q_mean' in param_name:
+            return dict(config.flows.lr.cluster_means_q_mean)
+        elif 'cluster_scales_q_mean' in param_name:
+            return dict(config.flows.lr.cluster_scales_q_mean)
         else:
-            return {"lr": config.flows.lr, "betas": (0.9, 0.999)}
+            return dict(config.flows.lr.default)
 
-    scheduler = Adam(per_param_callable)
+    scheduler = ClippedAdam(per_param_callable_single_optim)
 
     # Setup the inference algorithm
     svi = SVI(model, guide, scheduler, loss=TraceMeanField_ELBO(num_particles=config.VI.num_particles, vectorize_particles=True))
@@ -323,25 +327,73 @@ def train(
     current_min_loss = float('inf')
     patience_counter = 0
     for epoch in range(1, NUM_EPOCHS + 1):
+        annealing_factor = 1.0 if not config.VI.kl_annealing else min(1.0, max(epoch / config.VI.kl_annealing, MIN_ANNEAL))
+        # print("ANNEALING FACTOR", annealing_factor)
         running_loss = 0.0
         for step in range(NUM_BATCHES):
-            loss = svi.step(data)
-            running_loss += loss / config.flows.batch_size
+            loss = svi.step(data, annealing_factor=annealing_factor)  # Pass annealing_factor to svi.step
+            running_loss += (loss / config.flows.batch_size)
+            # if epoch % 40 > 20:
+            #     loss = svi_flow.step(data)
+            # else:
+            #     loss = svi_means.step(data)
+            #     loss = svi_scales.step(data)
+
         epoch_pbar.set_description(f"Epoch {epoch} : loss = {round(running_loss, 4)}")
+
+        # print(
+        #     f"MEAN LR", scheduler.optim_objs[pyro.param("cluster_means_q_mean")].state_dict()['param_groups'][0]['lr'], "\n", 
+        #     f"SCALE LR", scheduler.optim_objs[pyro.param("cluster_scales_q_mean").unconstrained()].state_dict()['param_groups'][0]['lr'], "\n", 
+        #     f"FLOW LR", scheduler.optim_objs[pyro.param("posterior_flow$$$transform.ode.0.weight")].state_dict()['param_groups'][0]['lr']
+        # )
+        if epoch % 10 == 0 or epoch == 1:
+            with torch.no_grad():  # Ensure no backpropagation graphs are used
+                cluster_logits = pyro.sample("cluster_logits", ZukoToPyro(cluster_probs_flow_dist(data)))
+                cluster_assignments_posterior = torch.argmax(cluster_logits, dim=1)
+
+                if config.data.dataset == "DLPFC":
+                    true_assignments = original_adata.xenium_spot_data.obs.loc[~original_adata.xenium_spot_data.obs["Region"].isna(), "Region"]
+                    print("Total Clusters Used:", torch.unique(cluster_assignments_posterior).numel(), "OUT OF", len(true_assignments.unique()))
+                    # Print the cluster proportion breakdown for the posterior and the ground truth
+                    posterior_proportions = torch.bincount(cluster_assignments_posterior).float() / len(cluster_assignments_posterior)
+                    true_proportions = torch.bincount(torch.tensor(true_assignments.astype('category').cat.codes)).float() / len(true_assignments)
+                    print(f"Posterior Cluster Proportions: {posterior_proportions}")
+                    print(f"True Cluster Proportions: {true_proportions}")
+                    current_ari = ARI(cluster_assignments_posterior.cpu(), true_assignments)
+                    print(f"ARI: {current_ari:.3f}, NMI: {NMI(cluster_assignments_posterior.cpu(), true_assignments):.3f}")
+                    
+                    if 'max_ari' not in locals():
+                        max_ari = current_ari
+                    else:
+                        max_ari = max(max_ari, current_ari)
+                    
+                    print(f"Maximum ARI so far: {max_ari:.3f}")
+                # posterior_eval(
+                #     data,
+                #     spatial_locations,
+                #     original_adata,
+                #     config,
+                #     num_samples=5
+                # )
 
         if running_loss > current_min_loss:
             patience_counter += 1
         else:
             current_min_loss = running_loss
             patience_counter = 0
+            best_params = pyro.get_param_store().get_state()
         if patience_counter >= config.flows.patience:
-            break 
+            break
+
+        torch.cuda.empty_cache()
+
+    return best_params
 
 def save_filepath(config):
     total_file_path = (
         f"results/{config.data.dataset}/XenNF/DATA_DIM={config.data.data_dimension}/"
         f"K={config.data.num_clusters}/INIT={config.data.init_method}/NEIGHBORSIZE={config.data.neighborhood_size}/GAMMA={config.VI.gamma}/"
-        f"FLOW_TYPE={config.flows.flow_type}/FLOW_LENGTH={config.flows.flow_length}/HIDDEN_LAYERS={config.flows.hidden_layers}"
+        f"FLOW_TYPE={config.flows.posterior_flow_type}/FLOW_LENGTH={config.flows.posterior_flow_length}/HIDDEN_LAYERS={config.flows.hidden_layers}"
     )
     return total_file_path
 
@@ -357,6 +409,9 @@ def posterior_eval(
 
     cluster_probs_samples = []
     batch_size = config.flows.batch_size
+    if batch_size == -1:
+        config.flows.batch_size = len(data)
+        batch_size = len(data)
 
     if loading_trained_model:
         pyro.module("posterior_flow", cluster_probs_flow_dist, update_module_params=True)
@@ -478,7 +533,7 @@ if __name__ == "__main__":
     pyro.clear_param_store()
     expected_total_param_dim = 2 # K x D
     warnings.filterwarnings("ignore")
-    config = OmegaConf.load(f'config/config_SYNTHETIC/config{args.config_name}.yaml')
+    config = OmegaConf.load(f'config/config_DLPFC/config{args.config_name}.yaml')
 
     (
         data, 
@@ -491,8 +546,14 @@ if __name__ == "__main__":
         cluster_states
     ) = prepare_data(config)
 
+    # handle DLPFC missingness
+    if config.data.dataset == "DLPFC":
+
+        non_na_mask = ~original_adata.xenium_spot_data.obs["Region"].isna()
+        data = data[non_na_mask]
+
     # model, flow, and guide setup
-    def model(data):
+    def model(data, annealing_factor=1.0):
 
         global cluster_states
 
@@ -528,14 +589,14 @@ if __name__ == "__main__":
                 )
 
     cluster_probs_flow_dist = setup_zuko_flow(
-        flow_type=config.flows.flow_type,
-        flow_length=config.flows.flow_length,
+        flow_type=config.flows.posterior_flow_type,
+        flow_length=config.flows.posterior_flow_length,
         num_clusters=config.data.num_clusters,
         context_length=config.data.data_dimension,
         hidden_layers=config.flows.hidden_layers
     )
  
-    def guide(data):
+    def guide(data, annealing_factor=1.0):
         
         pyro.module("posterior_flow", cluster_probs_flow_dist)
 
@@ -574,7 +635,7 @@ if __name__ == "__main__":
             )
 
     model_save_path = os.path.join(
-        "/nfs/turbo/lsa-regier/scratch", 
+        "/data/scratch/roko", 
         "roko/nf_results",
         save_filepath(config)
     )

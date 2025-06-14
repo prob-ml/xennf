@@ -925,7 +925,7 @@ if __name__ == "__main__":
         # print(f"Scale Norm: {torch.norm(cluster_scales_q_mean - empirical_prior_scales)}")
 
     model_save_path = os.path.join(
-        "/nfs/turbo/lsa-regier/scratch", 
+        "/data/scratch/roko", 
         "roko/nf_results",
         save_filepath(config)
     )

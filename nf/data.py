@@ -136,7 +136,7 @@ def prepare_DLPFC_data(
     spatial_locations = section.obs[["array_row", "array_col"]]
     spatial_locations.columns = ["row", "col"]
 
-    clustering = XeniumCluster(data=section.X, dataset_name="DLPFC")
+    clustering = XeniumCluster(data=section.X, dataset_name="DLPFC", dlpfc_section=section_id)
     clustering.xenium_spot_data = section
     clustering.xenium_spot_data.X = clustering.xenium_spot_data.X.A
     if log_normalize:

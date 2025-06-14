@@ -4408,6 +4408,26 @@ files = [
 ptyprocess = ">=0.5"
 
 [[package]]
+name = "phenograph"
+version = "1.5.7"
+description = "Graph-based clustering for high-dimensional single-cell data"
+category = "main"
+optional = false
+python-versions = ">=3.6"
+files = [
+    {file = "PhenoGraph-1.5.7-py3-none-any.whl", hash = "sha256:62a0fb88e13e4409875da0d382f0783a63faa4913b79f61b99528eb79c93c2e2"},
+    {file = "PhenoGraph-1.5.7.tar.gz", hash = "sha256:46b28f9e043a00deba53bb5f35dd84793669ab2bd4ce78900bf7f15f1321515a"},
+]
+
+[package.dependencies]
+leidenalg = ">=0.8.2"
+numpy = ">=1.12"
+psutil = ">4"
+scikit-learn = ">=0.17"
+scipy = ">=1.5.1"
+setuptools = ">=18.0.1"
+
+[[package]]
 name = "pillow"
 version = "11.0.0"
 description = "Python Imaging Library (Fork)"
@@ -7281,4 +7301,4 @@ dev = ["pre-commit", "pytest", "ruff"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.10"
-content-hash = "f88a591d473860711f3eba6e5e797f1a87e31ed3ee876723946d2bc3658b0e4b"
+content-hash = "92ab1f0ceb6c5854024201d14385df719d2cec4d922784172af3ed8a7449e33a"
